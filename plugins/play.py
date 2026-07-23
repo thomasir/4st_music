@@ -20,7 +20,7 @@ import logging
 import random
 
 from pyrogram import Client, filters
-from pyrogram.errors import MessageNotModified, MessageIdInvalid, FloodWait
+from pyrogram.errors import MessageNotModified, MessageIdInvalid, FloodWait, ChannelInvalid, ChatAdminRequired, UserNotParticipant
 from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 )
@@ -315,14 +315,38 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                 "Group Settings → Voice Chats → **Start** karo pehle,\nphir `/play` dobara karo. 🎵"
             )
             return
+        except (ChannelInvalid, ChatAdminRequired, UserNotParticipant) as e:
+            # pytgcalls internally calls channels.GetChannels — ye tab fail hota hai jab:
+            # 1. Group regular group hai (supergroup nahi) — voice chat support nahi
+            # 2. Assistant ko group access nahi hai
+            # 3. Assistant group member nahi hai
+            log.warning("Channel access error in chat %s: %s", chat_id, e)
+            await _safe_edit(
+                status_msg,
+                "❌ **Voice Chat access nahi mila!**\n\n"
+                "**Possible reasons:**\n"
+                "• Group **Supergroup** nahi hai — Voice Chat sirf supergroups mein kaam karta hai\n"
+                "• Assistant ko group mein **admin** banana padega\n"
+                "• Assistant pehle group mein **add** nahi hua\n\n"
+                "**Fix:** Assistant ko group mein add karo → Admin banao → phir `/play` try karo. 🎵"
+            )
+            return
         except Exception as e:
-            # Never treat an arbitrary "already connected" error as success:
-            # PyTgCalls can report it before FFmpeg has actually started.
+            err_str = str(e)
+            # ChannelInvalid string check — kabhi kabhi pyrogram wrapped exception aata hai
+            if "CHANNEL_INVALID" in err_str or "channel_invalid" in err_str.lower():
+                log.warning("Channel invalid (wrapped) in chat %s: %s", chat_id, e)
+                await _safe_edit(
+                    status_msg,
+                    "❌ **Voice Chat access nahi mila!**\n\n"
+                    "Assistant ko group mein **Admin** banao, phir `/play` dobara try karo. 🎵"
+                )
+                return
             log.exception("Playback failed in chat %s", chat_id)
             await _safe_edit(
                 status_msg,
-                f"❌ **Playback error:**\n`{str(e)[:500]}`\n\n"
-                "YouTube link expire ho sakta hai — dobara `/play` try karo.",
+                f"❌ **Playback error:**\n`{err_str[:400]}`\n\n"
+                "Kuch aur gadbad hai — thodi der mein dobara try karo. 🎵",
             )
             return
 
