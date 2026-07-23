@@ -120,6 +120,19 @@ async def init_db():
             created_at    INTEGER DEFAULT (strftime('%s','now')),
             PRIMARY KEY(requester_id, target_id)
         );
+        CREATE TABLE IF NOT EXISTS play_history (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id     INTEGER,
+            title       TEXT,
+            webpage_url TEXT,
+            thumbnail   TEXT DEFAULT '',
+            duration    INTEGER DEFAULT 0,
+            played_at   INTEGER DEFAULT (strftime('%s','now'))
+        );
+        CREATE TABLE IF NOT EXISTS autoplay_settings (
+            chat_id INTEGER PRIMARY KEY,
+            enabled INTEGER DEFAULT 0
+        );
         """)
         # ── Schema migrations (safe — ignore if column already exists) ──
         migrations = [
@@ -713,6 +726,66 @@ async def get_protection_until(chat_id: int, user_id: int) -> int:
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
+
+
+# ══ PLAY HISTORY ══════════════════════════════════════════════════
+
+async def add_play_history(chat_id: int, title: str, webpage_url: str, thumbnail: str = "", duration: int = 0):
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT INTO play_history (chat_id, title, webpage_url, thumbnail, duration) VALUES (?,?,?,?,?)",
+            (chat_id, title[:200], webpage_url, thumbnail, duration)
+        )
+        # Keep last 200 songs per chat to avoid unbounded growth
+        await db.execute(
+            "DELETE FROM play_history WHERE chat_id=? AND id NOT IN "
+            "(SELECT id FROM play_history WHERE chat_id=? ORDER BY played_at DESC LIMIT 200)",
+            (chat_id, chat_id)
+        )
+        await db.commit()
+
+
+async def get_random_history_song(chat_id: int) -> dict | None:
+    """Return a random song from this chat's play history, or None if empty."""
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute(
+            "SELECT title, webpage_url, thumbnail, duration FROM play_history "
+            "WHERE chat_id=? ORDER BY RANDOM() LIMIT 1",
+            (chat_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            if row:
+                return {"title": row[0], "webpage_url": row[1], "thumbnail": row[2], "duration": row[3]}
+            return None
+
+
+async def get_history_count(chat_id: int) -> int:
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM play_history WHERE chat_id=?", (chat_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+# ══ AUTOPLAY ══════════════════════════════════════════════════════
+
+async def get_autoplay(chat_id: int) -> bool:
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute(
+            "SELECT enabled FROM autoplay_settings WHERE chat_id=?", (chat_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return bool(row and row[0])
+
+
+async def set_autoplay(chat_id: int, enabled: bool):
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO autoplay_settings (chat_id, enabled) VALUES (?,?)",
+            (chat_id, int(enabled))
+        )
+        await db.commit()
 
 
 async def get_all_users_ids() -> list:

@@ -7,8 +7,10 @@ misleading "token" error.
 """
 
 import os
+import re
 import yt_dlp
 import asyncio
+import aiohttp
 import logging
 import time
 import tempfile
@@ -548,6 +550,15 @@ async def get_stream(
     loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(_exec, _extract_sync, url, not is_video)
     if not info:
+        # yt-dlp exhausted — try Invidious API (bypasses Heroku/cloud IP blocks)
+        vid_id = _extract_video_id(url)
+        if vid_id:
+            log.info(f"🔄 yt-dlp failed — trying Invidious fallback for {vid_id}")
+            inv = await _try_invidious(vid_id, not is_video)
+            if inv:
+                su, dur = inv
+                _cache_stream(url, is_video, su, None, dur, {})
+                return su, None, dur, {}
         raise Exception(f"❌ Stream resolve nahi hua: {url[:60]}")
 
     su, audio_url = _pick_urls(info, not is_video)
@@ -559,6 +570,97 @@ async def get_stream(
 
     _cache_stream(url, is_video, su, audio_url, dur, headers)
     return su, audio_url, dur, headers
+
+
+# ── Invidious fallback ────────────────────────────────────────────
+# Public Invidious instances — used when yt-dlp fails on Heroku/cloud IPs.
+# Invidious acts as a proxy and returns direct CDN URLs without IP restrictions.
+_INVIDIOUS_INSTANCES = [
+    "https://invidious.privacydev.net",
+    "https://iv.melmac.space",
+    "https://invidious.nerdvpn.de",
+    "https://inv.tux.pizza",
+    "https://invidious.io.lol",
+    "https://invidious.fdn.fr",
+    "https://yt.drgnz.club",
+]
+
+
+def _extract_video_id(url: str) -> str | None:
+    """Extract YouTube video ID from any YouTube URL format."""
+    patterns = [
+        r"[?&]v=([a-zA-Z0-9_-]{11})",
+        r"youtu\.be/([a-zA-Z0-9_-]{11})",
+        r"embed/([a-zA-Z0-9_-]{11})",
+        r"shorts/([a-zA-Z0-9_-]{11})",
+        r"^([a-zA-Z0-9_-]{11})$",
+    ]
+    for p in patterns:
+        m = re.search(p, url)
+        if m:
+            return m.group(1)
+    return None
+
+
+async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | None:
+    """
+    Try public Invidious instances as a last-resort fallback.
+    Returns (stream_url, duration_secs) or None.
+
+    Invidious instances serve as YouTube proxies and bypass the Heroku/cloud
+    IP restrictions that block yt-dlp clients.
+    """
+    timeout = aiohttp.ClientTimeout(total=10, connect=5)
+    for instance in _INVIDIOUS_INSTANCES:
+        try:
+            api_url = f"{instance}/api/v1/videos/{video_id}"
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(api_url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+                    if resp.status != 200:
+                        log.debug(f"Invidious {instance} → HTTP {resp.status}")
+                        continue
+                    data = await resp.json(content_type=None)
+
+            duration = int(data.get("lengthSeconds", 0) or 0)
+
+            if audio_only:
+                # adaptiveFormats = separate audio/video streams
+                adaptive = data.get("adaptiveFormats") or []
+                audio_fmts = [
+                    f for f in adaptive
+                    if f.get("type", "").startswith("audio/")
+                    and f.get("url")
+                ]
+                if audio_fmts:
+                    best = max(audio_fmts, key=lambda f: int(f.get("bitrate", 0) or 0))
+                    su = best["url"]
+                    log.info(f"✅ Invidious audio OK | {instance} | {video_id}")
+                    return su, duration
+            else:
+                # formatStreams = muxed video+audio (progressive)
+                fmt_streams = data.get("formatStreams") or []
+                video_fmts = [
+                    f for f in fmt_streams
+                    if f.get("type", "").startswith("video/") and f.get("url")
+                ]
+                if video_fmts:
+                    def _res(f):
+                        try:
+                            return int((f.get("resolution") or "0p").rstrip("p"))
+                        except ValueError:
+                            return 0
+                    best = max(video_fmts, key=_res)
+                    su = best["url"]
+                    log.info(f"✅ Invidious video OK | {instance} | {video_id}")
+                    return su, duration
+
+            log.debug(f"Invidious {instance} — no usable format in response")
+        except Exception as e:
+            log.debug(f"Invidious {instance} error: {e}")
+            continue
+
+    log.error(f"❌ All Invidious instances failed for {video_id}")
+    return None
 
 
 def fmt_duration(secs: int) -> str:

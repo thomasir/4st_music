@@ -41,14 +41,19 @@ from helpers.queue import (
     queue_size, pop_queue, get_queue, clear_queue, is_active, shuffle_queue,
 )
 from helpers.youtube import get_stream, fmt_duration
+from database import (
+    add_play_history, get_random_history_song, get_history_count,
+    get_autoplay, set_autoplay,
+)
 from config import DOWNLOAD_DIR, FFMPEG_VOLUME_BOOST, LOG_CHANNEL, OWNER_USERNAME, BOT_NAME
 
 log = logging.getLogger("ApexBot.play")
 
 _VOL_EFFECTIVE = min(float(FFMPEG_VOLUME_BOOST), 10.0)
 
-# ── Loop store ────────────────────────────────────────────────────
+# ── Loop / Autoplay store ─────────────────────────────────────────
 _loop_enabled: dict[int, bool] = {}
+_autoplay:     dict[int, bool] = {}   # in-memory cache; DB is source of truth
 
 def _ffmpeg_params() -> str:
     return f"-af volume={_VOL_EFFECTIVE:.1f}"
@@ -124,13 +129,14 @@ def _get_lock(chat_id: int) -> asyncio.Lock:
 
 # ══ MUSIC CARD UI ══════════════════════════════════════════════════
 
-def now_playing_buttons(url: str = "", paused: bool = False, queue_count: int = 0) -> InlineKeyboardMarkup:
+def now_playing_buttons(url: str = "", paused: bool = False, queue_count: int = 0, autoplay: bool = False, chat_id: int = 0) -> InlineKeyboardMarkup:
     toggle = (
         InlineKeyboardButton("▶️ Resume", callback_data="resume")
         if paused else
         InlineKeyboardButton("⏸️ Pause", callback_data="pause")
     )
     queue_label = f"📋 Queue ({queue_count})" if queue_count > 0 else "📋 Empty"
+    ap_label = "🔁 Autoplay ✅" if autoplay else "🔁 Autoplay ○"
     rows = [
         [
             toggle,
@@ -146,6 +152,9 @@ def now_playing_buttons(url: str = "", paused: bool = False, queue_count: int = 
             InlineKeyboardButton("🔀 Shuffle", callback_data="shuffle_cb"),
             InlineKeyboardButton("🔁 Loop", callback_data="loop_cb"),
             InlineKeyboardButton("🔄 Refresh", callback_data="np_refresh"),
+        ],
+        [
+            InlineKeyboardButton(ap_label, callback_data="autoplay_cb"),
         ],
     ]
     if url and url.startswith("http"):
@@ -167,12 +176,14 @@ def np_card_text(song: Song, chat_id: int = 0) -> str:
     quality_tag = "📺 Video 720p" if song.is_video else "🎙️ HQ Audio"
     vol         = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
     loop_on     = _loop_enabled.get(chat_id, False)
+    ap_on       = _autoplay.get(chat_id, False)
     q           = queue_size(chat_id)
     dur_text    = fmt_duration(song.duration) if song.duration else "🔴 Live"
     title       = (song.title[:62] + "…") if len(song.title) > 62 else song.title
     q_display   = f"**{q}** song{'s' if q != 1 else ''}" if q > 0 else "Empty"
     vol_bar     = _vol_bar(vol)
     loop_str    = "🔁 **ON**" if loop_on else "○ OFF"
+    ap_str      = "🔁 **ON**" if ap_on else "○ OFF"
 
     return (
         f"**{kind_emoji} NOW PLAYING** ✨\n"
@@ -182,7 +193,8 @@ def np_card_text(song: Song, chat_id: int = 0) -> str:
         f"> 👤 Requested by {song.requested_by or 'Unknown'}\n"
         f"> 🔊 `{vol_bar}` **{vol}%**\n"
         f"> 📋 Queue: {q_display}\n"
-        f"> 🔁 Loop: {loop_str}"
+        f"> 🔁 Loop: {loop_str}\n"
+        f"> 🎲 Autoplay: {ap_str}"
     )
 
 
@@ -434,11 +446,18 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             _volumes[chat_id] = int(_VOL_EFFECTIVE * 20)
         asyncio.create_task(_set_volume_bg(chat_id))
 
+        # ── Save to play history (for Autoplay) ──────────────────
+        asyncio.create_task(add_play_history(
+            chat_id, song.title, song.webpage_url or song.url,
+            song.thumbnail, song.duration
+        ))
+
         # ── Now Playing card ─────────────────────────────────────
         vol = _volumes[chat_id]
         q   = queue_size(chat_id)
+        ap  = _autoplay.get(chat_id, False)
         np_text = np_card_text(song, chat_id)
-        buttons  = now_playing_buttons(song.webpage_url or "", queue_count=q)
+        buttons  = now_playing_buttons(song.webpage_url or "", queue_count=q, autoplay=ap, chat_id=chat_id)
 
         sent_np = None
         deleted_status = False   # BUG FIX: track whether status_msg was deleted
@@ -685,7 +704,7 @@ async def pause_cmd(client: Client, message: Message):
             asyncio.create_task(_safe_edit(
                 np_msg,
                 np_card_text(current, chat_id),
-                now_playing_buttons(current.webpage_url or "", paused=True, queue_count=queue_size(chat_id))
+                now_playing_buttons(current.webpage_url or "", paused=True, queue_count=queue_size(chat_id), autoplay=_autoplay.get(chat_id, False), chat_id=chat_id)
             ))
         r = await client.send_message(
             chat_id,
@@ -724,7 +743,7 @@ async def resume_cmd(client: Client, message: Message):
             asyncio.create_task(_safe_edit(
                 np_msg,
                 np_card_text(current, chat_id),
-                now_playing_buttons(current.webpage_url or "", paused=False, queue_count=queue_size(chat_id))
+                now_playing_buttons(current.webpage_url or "", paused=False, queue_count=queue_size(chat_id), autoplay=_autoplay.get(chat_id, False), chat_id=chat_id)
             ))
         r = await client.send_message(
             chat_id,
@@ -905,8 +924,10 @@ async def np_cmd(client: Client, message: Message):
     np_text = np_card_text(current, chat_id)
     buttons  = now_playing_buttons(
         current.webpage_url or "",
-        paused=_paused.get(chat_id, False),   # BUG FIX: show correct ▶️/⏸️ based on actual state
-        queue_count=queue_size(chat_id)
+        paused=_paused.get(chat_id, False),
+        queue_count=queue_size(chat_id),
+        autoplay=_autoplay.get(chat_id, False),
+        chat_id=chat_id,
     )
 
     if current.thumbnail:
@@ -970,6 +991,36 @@ async def _auto_next(chat_id: int, song: Song):
         log.warning(f"_auto_next {chat_id}: {e}")
 
 
+async def _autoplay_next(chat_id: int):
+    """Pick a random song from history and play it (autoplay mode)."""
+    try:
+        count = await get_history_count(chat_id)
+        if count == 0:
+            asyncio.create_task(_leave_call(chat_id))
+            return
+        song_info = await get_random_history_song(chat_id)
+        if not song_info or not song_info.get("webpage_url"):
+            asyncio.create_task(_leave_call(chat_id))
+            return
+        song = Song(
+            title       = song_info["title"],
+            url         = "",
+            webpage_url = song_info["webpage_url"],
+            thumbnail   = song_info.get("thumbnail", ""),
+            duration    = song_info.get("duration", 0),
+            requested_by= "🎲 Autoplay",
+            is_video    = False,
+        )
+        status_msg = await bot.send_message(
+            chat_id,
+            f"🎲 **Autoplay — Random Song!**\n🔍 Load ho raha hai...\n\n🎶 **{song.title[:55]}**"
+        )
+        await _do_play(chat_id, song, status_msg, False)
+    except Exception as e:
+        log.warning(f"_autoplay_next {chat_id}: {e}")
+        asyncio.create_task(_leave_call(chat_id))
+
+
 @call_py.on_update(tgfilters.stream_end())
 async def on_stream_end(client: PyTgCalls, update: StreamEnded):
     """Never await Telegram calls here — use create_task to prevent
@@ -984,8 +1035,12 @@ async def on_stream_end(client: PyTgCalls, update: StreamEnded):
 
     next_song = pop_queue(chat_id)
     if not next_song:
-        clear_queue(chat_id)
-        asyncio.create_task(_leave_call(chat_id))
+        # Autoplay mode — play random song from history
+        if _autoplay.get(chat_id, False):
+            asyncio.create_task(_autoplay_next(chat_id))
+        else:
+            clear_queue(chat_id)
+            asyncio.create_task(_leave_call(chat_id))
         return
     asyncio.create_task(_auto_next(chat_id, next_song))
 
@@ -1007,7 +1062,7 @@ async def cb_controls(client, cq):
                 await _safe_edit(
                     cq.message,
                     np_card_text(current, chat_id),
-                    now_playing_buttons(current.webpage_url or "", paused=True, queue_count=queue_size(chat_id))
+                    now_playing_buttons(current.webpage_url or "", paused=True, queue_count=queue_size(chat_id), autoplay=_autoplay.get(chat_id, False), chat_id=chat_id)
                 )
         except Exception:
             pass
@@ -1022,7 +1077,7 @@ async def cb_controls(client, cq):
                 await _safe_edit(
                     cq.message,
                     np_card_text(current, chat_id),
-                    now_playing_buttons(current.webpage_url or "", paused=False, queue_count=queue_size(chat_id))
+                    now_playing_buttons(current.webpage_url or "", paused=False, queue_count=queue_size(chat_id), autoplay=_autoplay.get(chat_id, False), chat_id=chat_id)
                 )
         except Exception:
             pass
@@ -1075,7 +1130,7 @@ async def cb_volume(client, cq):
             await _safe_edit(
                 cq.message,
                 np_card_text(current, chat_id),
-                now_playing_buttons(current.webpage_url or "", queue_count=queue_size(chat_id))
+                now_playing_buttons(current.webpage_url or "", queue_count=queue_size(chat_id), autoplay=_autoplay.get(chat_id, False), chat_id=chat_id)
             )
         except Exception:
             pass
@@ -1133,7 +1188,42 @@ async def cb_loop(client, cq):
             await _safe_edit(
                 cq.message,
                 np_card_text(current, chat_id),
-                now_playing_buttons(current.webpage_url or "", queue_count=queue_size(chat_id))
+                now_playing_buttons(current.webpage_url or "", queue_count=queue_size(chat_id), autoplay=_autoplay.get(chat_id, False), chat_id=chat_id)
+            )
+        except Exception:
+            pass
+
+
+@Client.on_callback_query(filters.regex("^autoplay_cb$"))
+async def cb_autoplay(client, cq):
+    chat_id = cq.message.chat.id
+    # Toggle in-memory cache
+    new_state = not _autoplay.get(chat_id, False)
+    _autoplay[chat_id] = new_state
+    # Persist to DB
+    asyncio.create_task(set_autoplay(chat_id, new_state))
+
+    count = await get_history_count(chat_id)
+    state_text = "ON ✅" if new_state else "OFF ❌"
+    await cq.answer(
+        f"🎲 Autoplay: {state_text}" +
+        (f" ({count} songs in history)" if new_state and count else ""),
+        show_alert=new_state and count == 0
+    )
+    if new_state and count == 0:
+        await cq.answer(
+            "⚠️ History khaali hai! Pehle kuch songs play karo — phir autoplay random songs chalayega.",
+            show_alert=True,
+        )
+
+    # Refresh NP card
+    current = get_current(chat_id)
+    if current:
+        try:
+            await _safe_edit(
+                cq.message,
+                np_card_text(current, chat_id),
+                now_playing_buttons(current.webpage_url or "", queue_count=queue_size(chat_id), autoplay=new_state, chat_id=chat_id)
             )
         except Exception:
             pass
@@ -1146,11 +1236,49 @@ async def cb_np_refresh(client, cq):
     if not current:
         return await cq.answer("❌ Abhi kuch nahi chal raha!", show_alert=True)
     await cq.answer("🔄 Refreshed!")
+    # Sync autoplay state from DB on refresh
+    _autoplay[chat_id] = await get_autoplay(chat_id)
     try:
         await _safe_edit(
             cq.message,
             np_card_text(current, chat_id),
-            now_playing_buttons(current.webpage_url or "", queue_count=queue_size(chat_id))
+            now_playing_buttons(current.webpage_url or "", queue_count=queue_size(chat_id), autoplay=_autoplay.get(chat_id, False), chat_id=chat_id)
         )
     except Exception:
         pass
+
+
+@Client.on_message(filters.command(["autoplay", "ap"]) & filters.group)
+async def autoplay_cmd(client: Client, message: Message):
+    asyncio.create_task(_safe_delete(message))
+    chat_id = message.chat.id
+    new_state = not _autoplay.get(chat_id, False)
+    # If first use, sync from DB
+    if chat_id not in _autoplay:
+        new_state = not await get_autoplay(chat_id)
+    _autoplay[chat_id] = new_state
+    asyncio.create_task(set_autoplay(chat_id, new_state))
+
+    count = await get_history_count(chat_id)
+    state_emoji = "✅" if new_state else "❌"
+    r = await client.send_message(
+        chat_id,
+        f"🎲 **Autoplay: {state_emoji} {'ON' if new_state else 'OFF'}**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        + (
+            f"Queue khatam hone ke baad **{count}** songs mein se\nrandom song automatically play hoga! 🎵\n\n"
+            f"_Jitna zyada songs play karoge, utna better random selection._"
+            if new_state and count > 0 else
+            f"⚠️ History abhi khaali hai!\nPehle kuch songs play karo, phir autoplay kaam karega. 🎵"
+            if new_state and count == 0 else
+            f"_Autoplay band kar diya. Queue khatam hone par bot VC chhod dega._"
+        ),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(
+                f"🎲 Autoplay {'Band Karo' if new_state else 'Chalu Karo'}",
+                callback_data="autoplay_cb"
+            )
+        ]])
+    )
+    await asyncio.sleep(8)
+    asyncio.create_task(_safe_delete(r))
