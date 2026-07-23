@@ -13,10 +13,12 @@
   "env": {
     "API_ID": {
       "description": "Telegram App ID — visit https://my.telegram.org then API Development Tools, copy the App api_id number",
+      "value": "37193916",
       "required": true
     },
     "API_HASH": {
       "description": "Telegram App Hash — visit https://my.telegram.org then API Development Tools, copy the App api_hash string",
+      "value": "a5c865f962588fd3b76d6ed9a2f5953f",
       "required": true
     },
     "BOT_TOKEN": {
@@ -41,7 +43,7 @@
     },
     "MUST_JOIN": {
       "description": "Channel username WITHOUT @ that users must join to use the bot (e.g. ApexAssociation). Leave empty to disable this check.",
-      "value": ""
+      "value": "DigitaL_MajduR"
     },
     "SUPPORT_CHAT": {
       "description": "Support group invite link shown in /start message",
