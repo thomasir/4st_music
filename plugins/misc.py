@@ -275,7 +275,7 @@ async def start_private(client: Client, message: Message):
     reward_text = ""
     already = await has_started(user_id)
     if not already:
-        await init_economy(user_id)
+        await init_economy(user_id, 0)
         reward = random.randint(FIRST_START_MIN, FIRST_START_MAX)
         await add_balance(user_id, reward)
         reward_text = (
