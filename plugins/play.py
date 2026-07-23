@@ -159,7 +159,7 @@ def _vol_bar(vol: int, total: int = 10) -> str:
 def np_card_text(song: Song, chat_id: int = 0) -> str:
     """Premium now-playing card."""
     kind_emoji  = "🎬" if song.is_video else "🎵"
-    quality_tag = "📺 Full HD Video" if song.is_video else "🎙️ HQ Audio"
+    quality_tag = "📺 Video 720p" if song.is_video else "🎙️ HQ Audio"
     vol         = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
     loop_on     = _loop_enabled.get(chat_id, False)
     q           = queue_size(chat_id)
@@ -235,7 +235,10 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
             return
 
         try:
-            stream_url, dur, http_headers = await get_stream(source, is_video=is_video)
+            stream_url, audio_url, dur, http_headers = await get_stream(
+                source,
+                is_video=is_video,
+            )
             if dur and not song.duration:
                 song.duration = dur
         except Exception as e:
@@ -261,21 +264,14 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
         # BUG FIX: http_headers MediaStream ko pass karo.
         # YouTube DASH CDN URLs bina User-Agent/origin headers ke 403 deta hai.
         try:
-            if is_video:
-                stream = MediaStream(
-                    stream_url,
-                    audio_parameters=AudioQuality.HIGH,
-                    video_parameters=VideoQuality.FHD_1080p,
-                    ffmpeg_parameters=_ffmpeg_params(),
-                    headers=http_headers or None,
-                )
-            else:
-                stream = MediaStream(
-                    stream_url,
-                    audio_parameters=AudioQuality.HIGH,
-                    ffmpeg_parameters=_ffmpeg_params(),
-                    headers=http_headers or None,
-                )
+            stream = MediaStream(
+                stream_url,
+                audio_parameters=AudioQuality.HIGH,
+                video_parameters=VideoQuality.HD_720p,
+                audio_path=audio_url,
+                ffmpeg_parameters=_ffmpeg_params(),
+                headers=http_headers or None,
+            )
             await call_py.play(chat_id, stream)
 
         except NoActiveGroupCall:
@@ -286,12 +282,15 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
             )
             return
         except Exception as e:
-            # BUG FIX: AlreadyJoinedError py-tgcalls 2.x mein nahi hai — string se check
-            if "already" in str(e).lower():
-                pass  # Already in call — continue, playback shuru ho gaya
-            else:
-                await _safe_edit(status_msg, f"❌ **Playback error:**\n`{e}`")
-                return
+            # Never treat an arbitrary "already connected" error as success:
+            # PyTgCalls can report it before FFmpeg has actually started.
+            log.exception("Playback failed in chat %s", chat_id)
+            await _safe_edit(
+                status_msg,
+                f"❌ **Playback error:**\n`{str(e)[:500]}`\n\n"
+                "YouTube link expire ho sakta hai — dobara `/play` try karo.",
+            )
+            return
 
         set_current(chat_id, song)
 
@@ -360,7 +359,7 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
             "**▶️ Examples:**\n"
             "• `/play Arijit Singh tum hi ho`\n"
             "• `/play https://youtube.com/watch?v=...`\n"
-            "• `/vplay <song>` — 1080p HD Video\n"
+            "• `/vplay <song>` — 720p Video\n"
             "• `/playforce <song>` — ⚡ Queue skip\n\n"
             "> 💡 Song name, YouTube URL — dono kaam karte hain!",
             reply_markup=InlineKeyboardMarkup([[
@@ -474,7 +473,7 @@ async def playforce_cmd(client: Client, message: Message):
 
     try:
         from helpers.youtube import search_song
-        song_info = await search_song(query)
+        song_info = await search_song(query, is_video=False)
     except Exception as e:
         await _safe_edit(status_msg, f"❌ **Search error:**\n`{e}`")
         return

@@ -1,10 +1,9 @@
 """
-youtube.py — v7.0 Cookies-Only Mode
-✅ Cookies-only: YOUTUBE_COOKIES env var ya cookies/youtube.txt
-✅ No iOS / web_creator / custom player client — pure cookie auth
-✅ Standard Chrome User-Agent for compatibility
-✅ Lazy cookie loading — bot crash fix
-✅ Stream + search cache (TTL 1h / 30min)
+YouTube search and stream resolution.
+
+Cookies are optional. They can help with age-restricted videos, but making them
+mandatory breaks normal playback and turns a missing optional setting into a
+misleading "token" error.
 """
 
 import os
@@ -19,35 +18,59 @@ log = logging.getLogger("ApexBot.youtube")
 _exec = ThreadPoolExecutor(max_workers=6)
 
 # ── Cache ─────────────────────────────────────────────────────────
-# tuple: (stream_url, duration, http_headers, expires_at)
-_stream_cache: dict[str, tuple[str, int, dict, float]] = {}
-_search_cache: dict[str, tuple[dict, float]]           = {}
-STREAM_TTL = 3600
+# tuple: (media_url, audio_url, duration, http_headers, expires_at)
+_stream_cache: dict[tuple[str, bool], tuple[str, str | None, int, dict, float]] = {}
+_search_cache: dict[tuple[str, bool], tuple[dict, float]] = {}
+# YouTube CDN URLs are signed and should not be kept for a full hour.
+STREAM_TTL = 900
 SEARCH_TTL = 1800
 
 
-def _cached_stream(url: str) -> tuple[str, int, dict] | None:
-    e = _stream_cache.get(url)
-    if e and time.monotonic() < e[3]:
-        return e[0], e[1], e[2]
-    _stream_cache.pop(url, None)
+def _stream_key(url: str, is_video: bool) -> tuple[str, bool]:
+    return url.strip(), is_video
+
+
+def _cached_stream(
+    url: str,
+    is_video: bool,
+) -> tuple[str, str | None, int, dict] | None:
+    e = _stream_cache.get(_stream_key(url, is_video))
+    if e and time.monotonic() < e[4]:
+        return e[0], e[1], e[2], e[3]
+    _stream_cache.pop(_stream_key(url, is_video), None)
     return None
 
 
-def _cache_stream(url: str, su: str, dur: int, headers: dict | None = None):
-    _stream_cache[url] = (su, dur, headers or {}, time.monotonic() + STREAM_TTL)
+def _cache_stream(
+    url: str,
+    is_video: bool,
+    su: str,
+    audio_url: str | None,
+    dur: int,
+    headers: dict | None = None,
+):
+    _stream_cache[_stream_key(url, is_video)] = (
+        su,
+        audio_url,
+        dur,
+        headers or {},
+        time.monotonic() + STREAM_TTL,
+    )
 
 
-def _cached_search(q: str) -> dict | None:
-    e = _search_cache.get(q)
+def _cached_search(q: str, is_video: bool) -> dict | None:
+    e = _search_cache.get((q.strip().lower(), is_video))
     if e and time.monotonic() < e[1]:
         return e[0]
-    _search_cache.pop(q, None)
+    _search_cache.pop((q.strip().lower(), is_video), None)
     return None
 
 
-def _cache_search(q: str, info: dict):
-    _search_cache[q] = (info, time.monotonic() + SEARCH_TTL)
+def _cache_search(q: str, is_video: bool, info: dict):
+    _search_cache[(q.strip().lower(), is_video)] = (
+        info,
+        time.monotonic() + SEARCH_TTL,
+    )
 
 
 # ── Cookie setup — LAZY (no crash at startup) ─────────────────────
@@ -90,7 +113,7 @@ def _resolve_cookie_file() -> str | None:
         except Exception as e:
             log.warning(f"Cookie env parse failed: {e}")
 
-    log.warning("⚠️  No YOUTUBE_COOKIES found — using no-cookie mode (some videos may fail)")
+    log.info("No YouTube cookies configured; using public extraction")
     _COOKIE_FILE = None
     return None
 
@@ -98,12 +121,11 @@ def _resolve_cookie_file() -> str | None:
 # ── yt-dlp options ───────────────────────────────────────────────
 def _opts(audio_only: bool = True, fmt: str | None = None) -> dict:
     cookie = _resolve_cookie_file()
-    if not cookie:
-        raise RuntimeError(
-            "❌ YOUTUBE_COOKIES nahi mili! Bot sirf cookies ke saath play karta hai.\n"
-            "Heroku config mein YOUTUBE_COOKIES set karo."
-        )
-    default_fmt = "bestaudio/best" if audio_only else "bestvideo+bestaudio/best[height<=1080]/best"
+    default_fmt = (
+        "bestaudio[ext=m4a]/bestaudio/best"
+        if audio_only
+        else "best[height<=720][vcodec!=none][acodec!=none]/best"
+    )
     # ── Cookies-only mode ────────────────────────────────────────
     # Sirf cookies use karo — koi custom player_client nahi.
     # YouTube cookies se authenticated requests hoti hain jo
@@ -113,33 +135,81 @@ def _opts(audio_only: bool = True, fmt: str | None = None) -> dict:
         "quiet":          True,
         "no_warnings":    True,
         "noplaylist":     True,
-        "cookiefile":     cookie,
         "http_headers":   {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/125.0.0.0 Safari/537.36"
             ),
+            "Referer": "https://www.youtube.com/",
         },
     }
+    if cookie:
+        opts["cookiefile"] = cookie
     return opts
 
 
 # ── Sync extractors ───────────────────────────────────────────────
-def _pick_url(info: dict, audio_only: bool) -> str:
-    """Extract best stream URL from info dict."""
-    url = info.get("url") or info.get("manifest_url") or ""
-    if url:
-        return url
+def _pick_urls(info: dict, audio_only: bool) -> tuple[str, str | None]:
+    """Extract media and optional separate audio URLs from yt-dlp output."""
     fmts = info.get("formats") or []
+    requested = info.get("requested_formats") or []
+
     if audio_only:
+        # Do not accidentally return a combined video URL for /play.
         # Prefer audio-only streams sorted by bitrate
         af = [f for f in fmts if f.get("acodec") != "none" and f.get("vcodec") == "none"]
         if af:
-            return max(af, key=lambda f: f.get("abr") or f.get("tbr") or 0).get("url", "")
-    # Fallback: best combined stream
+            return (
+                max(af, key=lambda f: f.get("abr") or f.get("tbr") or 0).get("url", ""),
+                None,
+            )
+    else:
+        # yt-dlp returns requested_formats for bestvideo+bestaudio. PyTgCalls
+        # can consume those as media_path + audio_path and FFmpeg combines
+        # them while preserving the signed request headers.
+        if requested:
+            video = next(
+                (f for f in requested if f.get("vcodec") != "none" and f.get("url")),
+                None,
+            )
+            audio = next(
+                (f for f in requested if f.get("acodec") != "none" and f.get("url")),
+                None,
+            )
+            if video and audio:
+                return video["url"], audio["url"]
+
+        # If only progressive formats are available, use one URL.
+        av = [
+            f for f in fmts
+            if f.get("acodec") != "none" and f.get("vcodec") != "none"
+        ]
+        if av:
+            best = max(
+                av,
+                key=lambda f: (
+                    f.get("height") or 0,
+                    f.get("fps") or 0,
+                    f.get("tbr") or 0,
+                ),
+            )
+            return best.get("url", ""), None
+
+    # Direct extraction results do not always include a formats list.
+    url = info.get("url") or info.get("manifest_url") or ""
+    if url and (
+        audio_only
+        or (info.get("acodec", "none") != "none" and info.get("vcodec", "none") != "none")
+    ):
+        return url, None
     best = sorted(fmts, key=lambda f: f.get("quality") or f.get("tbr") or 0, reverse=True)
-    return best[0].get("url", "") if best else ""
+    return (best[0].get("url", ""), None) if best else ("", None)
+
+
+def _pick_url(info: dict, audio_only: bool) -> str:
+    """Compatibility helper for search metadata."""
+    return _pick_urls(info, audio_only)[0]
 
 
 def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
@@ -148,7 +218,11 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
     formats = (
         ["bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", "bestaudio/best", "best"]
         if audio_only else
-        ["bestvideo+bestaudio/best[height<=1080]/best", "best[height<=1080]/best", "best"]
+        [
+            "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
+            "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
+            "best",
+        ]
     )
     for fmt in formats:
         try:
@@ -159,7 +233,10 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
                     return info
         except yt_dlp.utils.DownloadError as e:
             err = str(e)
-            if "Requested format is not available" in err:
+            if (
+                "Requested format is not available" in err
+                or "format is not available" in err.lower()
+            ):
                 log.warning(f"Format {fmt!r} not available, retrying with next…")
                 continue
             log.error(f"yt-dlp download error: {e}")
@@ -207,7 +284,7 @@ def _search_sync(query: str, audio_only: bool = True) -> dict | None:
 
 async def search_song(query: str, is_video: bool = False) -> dict | None:
     """Search for a song/video. Returns info dict or None."""
-    cached = _cached_search(query)
+    cached = _cached_search(query, is_video)
     if cached:
         log.debug(f"Cache hit: {query[:40]}")
         return cached
@@ -245,22 +322,26 @@ async def search_song(query: str, is_video: bool = False) -> dict | None:
 
     # Cache stream URL only if it's a real CDN URL (not YouTube watch page)
     if result["webpage_url"] and is_cdn_url:
-        _cache_stream(result["webpage_url"], result["url"], result["duration"], http_headers)
-    _cache_search(query, result)
+        _cache_stream(result["webpage_url"], is_video, result["url"], None, result["duration"], http_headers)
+    _cache_search(query, is_video, result)
     return result
 
 
-async def get_stream(url: str, is_video: bool = False) -> tuple[str, int, dict]:
+async def get_stream(
+    url: str,
+    is_video: bool = False,
+    force_refresh: bool = False,
+) -> tuple[str, str | None, int, dict]:
     """
     Get direct stream URL for playback.
-    Returns (stream_url, duration_secs, http_headers).
+    Returns (media_url, optional_audio_url, duration_secs, http_headers).
 
     BUG FIX: ab 3-tuple return karta hai — headers bhi milte hain
     taaki MediaStream ko pass kar sakein aur YouTube 403 se bache.
     """
-    cached = _cached_stream(url)
+    cached = None if force_refresh else _cached_stream(url, is_video)
     if cached:
-        return cached  # (stream_url, dur, headers)
+        return cached
 
     # BUG FIX: get_running_loop() — Python 3.10+ compatible
     loop = asyncio.get_running_loop()
@@ -268,15 +349,15 @@ async def get_stream(url: str, is_video: bool = False) -> tuple[str, int, dict]:
     if not info:
         raise Exception(f"❌ Stream resolve nahi hua: {url[:60]}")
 
-    su      = _pick_url(info, not is_video)
+    su, audio_url = _pick_urls(info, not is_video)
     dur     = info.get("duration", 0) or 0
     headers = info.get("http_headers") or {}
 
     if not su:
         raise Exception(f"❌ Stream URL empty hai: {url[:60]}")
 
-    _cache_stream(url, su, dur, headers)
-    return su, dur, headers
+    _cache_stream(url, is_video, su, audio_url, dur, headers)
+    return su, audio_url, dur, headers
 
 
 def fmt_duration(secs: int) -> str:

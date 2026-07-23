@@ -79,8 +79,15 @@ async def main():
     from pyrogram import idle
     from clients import bot, assistant, call_py
     from database import init_db
+    from config import validate_config
 
     log.info("🚀 Starting Apex All-in-One Bot v6.0 ...")
+
+    try:
+        validate_config()
+    except RuntimeError as exc:
+        log.error("❌ Configuration error: %s", exc)
+        return
 
     await init_db()
     log.info("✅ Database initialised")

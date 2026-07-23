@@ -40,12 +40,14 @@ cookies/
 2. Extension: **"Get cookies.txt LOCALLY"** (Chrome Web Store)
 3. youtube.com → Export → naam badlo `youtube.txt` → `cookies/` folder mein daalo
 
-### Heroku par:
+### Heroku par (optional):
 1. `youtube.txt` Notepad mein kholo → Ctrl+A → Ctrl+C
 2. Heroku → **Settings** → **Config Vars**
 3. `YOUTUBE_COOKIES` = paste → Add
 
-> ✅ `cookies/*.txt` .gitignore mein hai — GitHub par kabhi nahi jaayega
+> ✅ `cookies/*.txt` .gitignore mein hai — GitHub par kabhi nahi jaayega. Normal public
+> videos ke liye cookies zaroori nahi hain; age-restricted videos ke liye valid,
+> fresh cookies use karo.
 
 ---
 
@@ -71,17 +73,21 @@ cookies/
 
 ## 🔑 Config Vars (Heroku)
 
-| Variable | Required | Pre-filled |
+| Variable | Required | Default |
 |----------|----------|------------|
 | `API_ID` | ✅ | — |
 | `API_HASH` | ✅ | — |
 | `BOT_TOKEN` | ✅ | — |
 | `SESSION_STRING` | ✅ | — |
-| `OWNER_ID` | ✅ | `8098146730` ✅ |
-| `OWNER_USERNAME` | ✅ | `TheY_CaIl_mE_OG` ✅ |
-| `LOG_CHANNEL` | ✅ | `-1004334848663` ✅ |
+| `OWNER_ID` | ✅ | — |
+| `OWNER_USERNAME` | ⚪ | — |
+| `LOG_CHANNEL` | ⚪ | — |
 | `YOUTUBE_COOKIES` | ⚪ | — |
-| `VOLUME_BOOST` | ⚪ | `10.0` ✅ |
+| `VOLUME_BOOST` | ⚪ | `10.0` |
+
+> ⚠️ API credentials must only exist in deployment config vars. The old public
+> defaults have been removed. If those credentials were ever used, rotate the
+> Telegram API hash and bot token before deploying this version.
 
 ---
 
