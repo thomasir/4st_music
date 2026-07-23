@@ -149,13 +149,20 @@ async def _set_volume_bg(chat_id: int):
 async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False):
     """Core: resolve stream + start playback."""
     async with _get_lock(chat_id):
-        # Resolve stream URL
-        try:
-            stream_url, duration = await get_stream(song.url, is_video=is_video)
-            if duration and not song.duration:
-                song.duration = duration
-        except Exception as e:
-            await _safe_edit(status_msg, f"❌ **Stream resolve nahi hua:**\n`{e}`")
+        # song.url is already a direct stream URL resolved by search_song.
+        # Do NOT call get_stream(song.url) — yt-dlp fails on googlevideo.com URLs.
+        stream_url = song.url
+        if not stream_url:
+            try:
+                source = song.webpage_url or song.url
+                stream_url, dur = await get_stream(source, is_video=is_video)
+                if dur and not song.duration:
+                    song.duration = dur
+            except Exception as e:
+                await _safe_edit(status_msg, f"❌ **Stream nahi mila:** `{e}`")
+                return
+        if not stream_url:
+            await _safe_edit(status_msg, "❌ **Stream URL khaali hai. Koi aur song try karo.**")
             return
 
         # Ensure assistant is in VC
