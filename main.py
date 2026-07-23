@@ -61,6 +61,12 @@ async def _start_client(client, name: str, max_retries: int = 10):
             )
             raise
         except Exception as e:
+            err_str = str(e).lower()
+            # BUG FIX: plugin import fail hone ke baad client TCP-level pe connected
+            # rehta hai. Retry pe "Client is already connected" aata hai — ye success hai.
+            if "already" in err_str and "connect" in err_str:
+                log.info(f"✅ {name} already connected — treating as success")
+                return
             log.error(f"❌ {name} start error (attempt {attempt}): {e}")
             if attempt >= max_retries:
                 raise

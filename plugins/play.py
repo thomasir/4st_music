@@ -26,7 +26,9 @@ from pyrogram.types import (
 )
 from pytgcalls import PyTgCalls, filters as tgfilters
 from pytgcalls.types import MediaStream, AudioQuality, VideoQuality, StreamEnded
-from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError, AlreadyJoinedError
+# BUG FIX: AlreadyJoinedError py-tgcalls 2.x mein exist nahi karta — import hataaya.
+# Isko ab generic Exception + string check se handle kiya jaata hai _do_play() mein.
+from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError
 
 from clients import bot, assistant, call_py
 from helpers.queue import (
@@ -206,17 +208,22 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
             f"⏱️ `{fmt_duration(song.duration)}`"
         )
 
-        # ── Resolve stream URL if needed ─────────────────────────
-        stream_url = song.url
-        if not stream_url:
-            try:
-                source = song.webpage_url or song.url
-                stream_url, dur = await get_stream(source, is_video=is_video)
-                if dur and not song.duration:
-                    song.duration = dur
-            except Exception as e:
-                await _safe_edit(status_msg, f"❌ **Stream nahi mila:**\n`{e}`\n\nDusra song try karo! 🎵")
-                return
+        # BUG FIX: hamesha webpage_url se fresh stream fetch karo.
+        # song.url direct CDN URL hota hai jo expire ho sakta hai.
+        # get_stream() cache check karta hai → fresh rehne par instant return,
+        # expire hone par auto re-fetch. Headers bhi milte hain.
+        source = song.webpage_url or song.url
+        if not source:
+            await _safe_edit(status_msg, "❌ **Source URL khaali hai.**\nKoi aur song try karo! 🎵")
+            return
+
+        try:
+            stream_url, dur, http_headers = await get_stream(source, is_video=is_video)
+            if dur and not song.duration:
+                song.duration = dur
+        except Exception as e:
+            await _safe_edit(status_msg, f"❌ **Stream nahi mila:**\n`{e}`\n\nDusra song try karo! 🎵")
+            return
 
         if not stream_url:
             await _safe_edit(status_msg, "❌ **Stream URL khaali hai.**\nKoi aur song try karo! 🎵")
@@ -234,6 +241,8 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
         await asyncio.sleep(0.4)
 
         # ── Build & start stream ──────────────────────────────────
+        # BUG FIX: http_headers MediaStream ko pass karo.
+        # YouTube DASH CDN URLs bina User-Agent/origin headers ke 403 deta hai.
         try:
             if is_video:
                 stream = MediaStream(
@@ -241,12 +250,14 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
                     audio_quality=AudioQuality.HIGH,
                     video_quality=VideoQuality.FHD_1080p,
                     ffmpeg_parameters=_ffmpeg_params(),
+                    headers=http_headers or None,
                 )
             else:
                 stream = MediaStream(
                     stream_url,
                     audio_quality=AudioQuality.HIGH,
                     ffmpeg_parameters=_ffmpeg_params(),
+                    headers=http_headers or None,
                 )
             await call_py.play(chat_id, stream)
 
@@ -257,11 +268,13 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
                 "Group Settings → Voice Chats → **Start** karo pehle,\nphir `/play` dobara karo. 🎵"
             )
             return
-        except AlreadyJoinedError:
-            pass  # Already in call, continue
         except Exception as e:
-            await _safe_edit(status_msg, f"❌ **Playback error:**\n`{e}`")
-            return
+            # BUG FIX: AlreadyJoinedError py-tgcalls 2.x mein nahi hai — string se check
+            if "already" in str(e).lower():
+                pass  # Already in call — continue, playback shuru ho gaya
+            else:
+                await _safe_edit(status_msg, f"❌ **Playback error:**\n`{e}`")
+                return
 
         set_current(chat_id, song)
 
@@ -371,6 +384,7 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
         requested_by = requested_by,
         webpage_url  = song_info.get("webpage_url", ""),
         thumbnail    = song_info.get("thumbnail", ""),
+        http_headers = song_info.get("http_headers", {}),
     )
 
     chat_id = message.chat.id
@@ -452,6 +466,7 @@ async def playforce_cmd(client: Client, message: Message):
         requested_by = requested_by,
         webpage_url  = song_info.get("webpage_url", ""),
         thumbnail    = song_info.get("thumbnail", ""),
+        http_headers = song_info.get("http_headers", {}),
     )
     asyncio.create_task(_do_play(chat_id, song, status_msg, False))
 

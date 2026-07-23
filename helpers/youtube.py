@@ -1,9 +1,10 @@
 """
-youtube.py — v6.0 Ultimate
-✅ Lazy cookie loading (bot crash fix — YOUTUBE_COOKIES optional)
-✅ Graceful fallback: no cookies → yt-dlp without cookies
-✅ Better error messages
-✅ Stream cache + search cache
+youtube.py — v6.1 (bug-fixed)
+✅ FIXED: extractor_args DASH/HLS skip hataya — bestaudio ab kaam karega
+✅ FIXED: asyncio.get_running_loop() (Python 3.10+ compatible)
+✅ FIXED: http_headers stream cache + search result mein add kiye
+✅ FIXED: get_stream() ab (url, dur, headers) return karta hai
+✅ Lazy cookie loading — bot crash fix
 """
 
 import os
@@ -18,22 +19,23 @@ log = logging.getLogger("ApexBot.youtube")
 _exec = ThreadPoolExecutor(max_workers=6)
 
 # ── Cache ─────────────────────────────────────────────────────────
-_stream_cache: dict[str, tuple[str, int, float]] = {}
-_search_cache: dict[str, tuple[dict, float]]     = {}
+# tuple: (stream_url, duration, http_headers, expires_at)
+_stream_cache: dict[str, tuple[str, int, dict, float]] = {}
+_search_cache: dict[str, tuple[dict, float]]           = {}
 STREAM_TTL = 3600
 SEARCH_TTL = 1800
 
 
-def _cached_stream(url: str) -> tuple[str, int] | None:
+def _cached_stream(url: str) -> tuple[str, int, dict] | None:
     e = _stream_cache.get(url)
-    if e and time.monotonic() < e[2]:
-        return e[0], e[1]
+    if e and time.monotonic() < e[3]:
+        return e[0], e[1], e[2]
     _stream_cache.pop(url, None)
     return None
 
 
-def _cache_stream(url: str, su: str, dur: int):
-    _stream_cache[url] = (su, dur, time.monotonic() + STREAM_TTL)
+def _cache_stream(url: str, su: str, dur: int, headers: dict | None = None):
+    _stream_cache[url] = (su, dur, headers or {}, time.monotonic() + STREAM_TTL)
 
 
 def _cached_search(q: str) -> dict | None:
@@ -88,7 +90,6 @@ def _resolve_cookie_file() -> str | None:
         except Exception as e:
             log.warning(f"Cookie env parse failed: {e}")
 
-    # 3. No cookies — will work for most public videos
     log.warning("⚠️  No YOUTUBE_COOKIES found — using no-cookie mode (some videos may fail)")
     _COOKIE_FILE = None
     return None
@@ -102,8 +103,10 @@ def _opts(audio_only: bool = True) -> dict:
         "quiet":       True,
         "no_warnings": True,
         "noplaylist":  True,
-        # Allow extractors that usually need cookies to try without them
-        "extractor_args": {"youtube": {"skip": ["dash", "hls"]}},
+        # BUG FIX: extractor_args hata diya jo DASH/HLS skip karta tha.
+        # YouTube ka bestaudio (format 140 m4a / 251 webm) DASH hai.
+        # Skip karne se sirf format 18 (360p) bachta tha jo bahut videos mein
+        # available nahi hota → empty stream_url → song play nahi hota.
     }
     if cookie:
         opts["cookiefile"] = cookie
@@ -118,12 +121,13 @@ def _pick_url(info: dict, audio_only: bool) -> str:
         return url
     fmts = info.get("formats") or []
     if audio_only:
-        # Prefer audio-only streams
+        # Prefer audio-only streams sorted by bitrate
         af = [f for f in fmts if f.get("acodec") != "none" and f.get("vcodec") == "none"]
         if af:
-            return max(af, key=lambda f: f.get("abr") or 0).get("url", "")
-    # Fallback: best overall
-    return fmts[-1].get("url", "") if fmts else ""
+            return max(af, key=lambda f: f.get("abr") or f.get("tbr") or 0).get("url", "")
+    # Fallback: best combined stream
+    best = sorted(fmts, key=lambda f: f.get("quality") or f.get("tbr") or 0, reverse=True)
+    return best[0].get("url", "") if best else ""
 
 
 def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
@@ -164,45 +168,61 @@ async def search_song(query: str, is_video: bool = False) -> dict | None:
         log.debug(f"Cache hit: {query[:40]}")
         return cached
 
-    loop = asyncio.get_event_loop()
+    # BUG FIX: get_running_loop() use karo — get_event_loop() Python 3.10+ mein deprecated hai
+    loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(_exec, _search_sync, query, not is_video)
     if not info:
         return None
 
+    # BUG FIX: http_headers result mein include karo.
+    # YouTube DASH CDN URLs ko User-Agent + origin headers chahiye (bina headers = 403).
+    http_headers = info.get("http_headers") or {}
+
     result = {
-        "title":       info.get("title", query)[:100],
-        "url":         _pick_url(info, not is_video),
-        "duration":    info.get("duration", 0) or 0,
-        "thumbnail":   info.get("thumbnail") or "",
-        "webpage_url": info.get("webpage_url") or info.get("original_url", ""),
-        "uploader":    info.get("uploader") or info.get("channel") or "",
-        "view_count":  info.get("view_count") or 0,
+        "title":        info.get("title", query)[:100],
+        "url":          _pick_url(info, not is_video),
+        "duration":     info.get("duration", 0) or 0,
+        "thumbnail":    info.get("thumbnail") or "",
+        "webpage_url":  info.get("webpage_url") or info.get("original_url", ""),
+        "uploader":     info.get("uploader") or info.get("channel") or "",
+        "view_count":   info.get("view_count") or 0,
+        "http_headers": http_headers,
     }
 
-    # Pre-cache the stream URL
+    # Pre-cache stream URL WITH headers
     if result["webpage_url"] and result["url"]:
-        _cache_stream(result["webpage_url"], result["url"], result["duration"])
+        _cache_stream(result["webpage_url"], result["url"], result["duration"], http_headers)
     _cache_search(query, result)
     return result
 
 
-async def get_stream(url: str, is_video: bool = False) -> tuple[str, int]:
-    """Get direct stream URL. Raises on failure."""
+async def get_stream(url: str, is_video: bool = False) -> tuple[str, int, dict]:
+    """
+    Get direct stream URL for playback.
+    Returns (stream_url, duration_secs, http_headers).
+
+    BUG FIX: ab 3-tuple return karta hai — headers bhi milte hain
+    taaki MediaStream ko pass kar sakein aur YouTube 403 se bache.
+    """
     cached = _cached_stream(url)
     if cached:
-        return cached
+        return cached  # (stream_url, dur, headers)
 
-    loop = asyncio.get_event_loop()
+    # BUG FIX: get_running_loop() — Python 3.10+ compatible
+    loop = asyncio.get_running_loop()
     info = await loop.run_in_executor(_exec, _extract_sync, url, not is_video)
     if not info:
         raise Exception(f"❌ Stream resolve nahi hua: {url[:60]}")
 
-    su  = _pick_url(info, not is_video)
-    dur = info.get("duration", 0) or 0
+    su      = _pick_url(info, not is_video)
+    dur     = info.get("duration", 0) or 0
+    headers = info.get("http_headers") or {}
+
     if not su:
         raise Exception(f"❌ Stream URL empty hai: {url[:60]}")
-    _cache_stream(url, su, dur)
-    return su, dur
+
+    _cache_stream(url, su, dur, headers)
+    return su, dur, headers
 
 
 def fmt_duration(secs: int) -> str:
