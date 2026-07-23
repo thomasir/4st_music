@@ -9,7 +9,10 @@
 
 set -e
 
-BUILD_DIR=${1:-/app}
+# Heroku invokes post_compile from the current slug directory and may expose
+# its path in BUILD_DIR. Do not hard-code /app: that path is runtime-specific
+# and can leave all vendor files outside the slug during compilation.
+BUILD_DIR=${1:-${BUILD_DIR:-$(pwd)}}
 
 VENDOR="$BUILD_DIR/vendor/ffmpeg/bin"
 EXTRACT="$BUILD_DIR/vendor/ffmpeg_tmp"
@@ -118,8 +121,13 @@ with zipfile.ZipFile(archive_path) as archive:
 PY
 then
   BGUTIL_ROOT=$(find "$BGUTIL_TMP/extracted" -mindepth 1 -maxdepth 1 -type d -print -quit)
-  cp -R "$BGUTIL_ROOT/plugin" "$BGUTIL_HOME/plugin"
-  cp -R "$BGUTIL_ROOT/server" "$BGUTIL_HOME/server"
+  if [ -d "$BGUTIL_ROOT/plugin" ] && [ -f "$BGUTIL_ROOT/server/src/generate_once.ts" ]; then
+    cp -R "$BGUTIL_ROOT/plugin" "$BGUTIL_HOME/plugin"
+    cp -R "$BGUTIL_ROOT/server" "$BGUTIL_HOME/server"
+  else
+    echo "       ⚠️ bgutil archive layout is unexpected; provider will remain inactive"
+    rm -rf "$BGUTIL_HOME"
+  fi
 
   # Deno resolves the provider's npm: dependencies from package.json and
   # installs the native canvas permission required by bgutils-js.
@@ -128,11 +136,20 @@ then
   else
     BGUTIL_DENO="$(command -v deno || true)"
   fi
-  if [ -n "$BGUTIL_DENO" ]; then
+  if [ -n "$BGUTIL_DENO" ] && [ -f "$BGUTIL_HOME/server/src/generate_once.ts" ]; then
     if (
       cd "$BGUTIL_HOME/server"
       "$BGUTIL_DENO" install --allow-scripts=npm:canvas --frozen
     ); then
+      mkdir -p "$BGUTIL_HOME/cache"
+      XDG_CACHE_HOME="$BGUTIL_HOME/cache" \
+        "$BGUTIL_DENO" run \
+          --allow-env \
+          --allow-net \
+          "--allow-ffi=$BGUTIL_HOME/server/node_modules" \
+          "--allow-write=$BGUTIL_HOME/cache" \
+          "--allow-read=$BGUTIL_HOME/cache,$BGUTIL_HOME/server/node_modules" \
+          "$BGUTIL_HOME/server/src/generate_once.ts" --version
       echo "       bgutil plugin + Deno provider installed ✅"
     else
       echo "       ⚠️ bgutil Deno dependency install failed; built-in yt-dlp providers remain available"

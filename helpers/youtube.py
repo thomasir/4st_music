@@ -34,6 +34,7 @@ import yt_dlp
 
 log = logging.getLogger("ApexBot.youtube")
 _exec = ThreadPoolExecutor(max_workers=6)
+_BGUTIL_STATUS_LOGGED = False
 
 # ── Cache ─────────────────────────────────────────────────────────
 # tuple: (media_url, audio_url, duration, http_headers, expires_at)
@@ -169,10 +170,22 @@ def _opts(
         "youtube": extractor_args,
     }
     bgutil_server = _bgutil_server_home()
-    if os.path.isfile(os.path.join(bgutil_server, "src", "generate_once.ts")):
+    bgutil_script = os.path.join(bgutil_server, "src", "generate_once.ts")
+    if os.path.isfile(bgutil_script):
         provider_args["youtubepot-bgutilscript"] = {
             "server_home": [bgutil_server],
         }
+        global _BGUTIL_STATUS_LOGGED
+        if not _BGUTIL_STATUS_LOGGED:
+            log.info("✅ bgutil PO-token provider configured: %s", bgutil_server)
+            _BGUTIL_STATUS_LOGGED = True
+    elif not _BGUTIL_STATUS_LOGGED:
+        log.warning(
+            "⚠️ bgutil PO-token provider is not installed at %s; "
+            "YouTube cloud extraction will use built-in providers only",
+            bgutil_server,
+        )
+        _BGUTIL_STATUS_LOGGED = True
 
     opts: dict = {
         "format":                   fmt if fmt is not None else default_fmt,
@@ -218,6 +231,11 @@ def _opts(
 
 def _bgutil_server_home() -> str:
     """Return the build-bundled bgutil provider server directory."""
+    configured_root = os.environ.get("YTDLP_BGUTIL_HOME", "").strip()
+    if configured_root:
+        configured_server = os.path.join(configured_root, "server")
+        if os.path.isdir(configured_server):
+            return configured_server
     return os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "vendor", "bgutil-ytdlp-pot-provider", "server",
