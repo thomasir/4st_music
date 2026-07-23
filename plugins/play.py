@@ -385,7 +385,8 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             await call_py.play(chat_id, stream)
 
         except NoActiveGroupCall:
-            set_current(chat_id, None)   # reset — play nahi hua
+            set_current(chat_id, None)
+            await _leave_call(chat_id)   # VC properly clean karo
             await _safe_edit(
                 status_msg,
                 "❌ **Voice Chat band hai!**\n\n"
@@ -393,7 +394,8 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             )
             return
         except (ChannelInvalid, ChatAdminRequired, UserNotParticipant) as e:
-            set_current(chat_id, None)   # reset — play nahi hua
+            set_current(chat_id, None)
+            await _leave_call(chat_id)   # VC properly clean karo
             log.warning("Channel access error in chat %s: %s", chat_id, e)
             await _safe_edit(
                 status_msg,
@@ -406,7 +408,8 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             )
             return
         except Exception as e:
-            set_current(chat_id, None)   # reset — play nahi hua
+            set_current(chat_id, None)
+            await _leave_call(chat_id)   # VC properly clean karo — warna bot VC mein stuck rehta hai
             err_str = str(e)
             if "CHANNEL_INVALID" in err_str or "channel_invalid" in err_str.lower():
                 log.warning("Channel invalid (wrapped) in chat %s: %s", chat_id, e)

@@ -287,30 +287,36 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
     log.info(f"🍪 Cookie status: {'loaded ✅' if cookie else 'NOT SET ❌ (set YOUTUBE_COOKIES env var!)'}")
 
     # fmt=None means "let yt-dlp decide — no restriction"
+    # NOTE: fmt=None + ignore_no_formats combos often return storyboard thumbnail
+    # URLs (i.ytimg.com) on cloud/Heroku IPs. _is_streamable_url() rejects those.
+    # "sabr" = YouTube's Streaming ABR client — bypasses many IP-level restrictions.
     if audio_only:
         combos: list[tuple[str | None, list, bool]] = [
             # (format_selector, player_clients, ignore_no_formats)
-            ("bestaudio/best",                                    ["tv_embedded"],                      False),
-            ("bestaudio/best",                                    ["ios"],                               False),
-            ("bestaudio/best",                                    ["android"],                           False),
-            ("bestaudio/best",                                    ["mweb"],                              False),
-            ("bestaudio/best",                                    ["web"],                               False),
-            ("bestaudio/best",                                    ["tv_embedded", "ios", "android"],     False),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",  ["ios", "android", "mweb"],           False),
-            # Last resort — ignore format errors, take whatever URL YouTube gives
-            (None,                                                ["tv_embedded"],                       True),
-            (None,                                                ["ios"],                               True),
-            (None,                                                ["android"],                           True),
-            (None,                                                ["tv_embedded", "ios", "android", "mweb", "web"], True),
+            ("bestaudio/best",                                    ["ios"],                                        False),
+            ("bestaudio/best",                                    ["android"],                                    False),
+            ("bestaudio/best",                                    ["tv_embedded"],                                False),
+            ("bestaudio/best",                                    ["mweb"],                                       False),
+            ("bestaudio/best",                                    ["web"],                                        False),
+            ("bestaudio/best",                                    ["tv_embedded", "ios", "android"],              False),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",  ["ios", "android", "mweb"],                   False),
+            # sabr client — bypasses most Heroku/cloud IP restrictions
+            ("bestaudio/best",                                    ["sabr"],                                       False),
+            ("bestaudio/best",                                    ["sabr", "ios"],                                False),
+            # Last resort — only accept if _is_streamable_url validates the CDN URL
+            (None,                                                ["ios"],                                        True),
+            (None,                                                ["android"],                                    True),
+            (None,                                                ["tv_embedded", "ios", "android", "mweb"],     True),
         ]
     else:
         combos = [
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False),
             ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android"],                   False),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False),
             ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"],           False),
             ("best[height<=720]/best",                                               ["tv_embedded", "ios", "android"],     False),
-            (None,                                                                   ["tv_embedded"],                        True),
-            (None,                                                                   ["tv_embedded", "ios", "android", "mweb", "web"], True),
+            ("best[height<=720]/best",                                               ["sabr"],                              False),
+            (None,                                                                   ["ios", "android"],                    True),
+            (None,                                                                   ["tv_embedded", "ios", "android"],     True),
         ]
 
     _RETRYABLE = (
