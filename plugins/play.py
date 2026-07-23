@@ -367,12 +367,14 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
         await asyncio.sleep(0.4)
 
         # ── Build & start stream ──────────────────────────────────
-        # BUG FIX: http_headers MediaStream ko pass karo.
-        # YouTube DASH CDN URLs bina User-Agent/origin headers ke 403 deta hai.
+        # RACE CONDITION FIX: set_current PEHLE karo, play() baad mein.
+        # call_py.play() ke baad agar immediately stream_end fire ho jaaye
+        # (network fail, bad URL, etc.), on_stream_end ko get_current() se
+        # song milna chahiye — warna wo None dekhta hai, queue khaali samajhta
+        # hai, aur _leave_call() call kar deta hai (1-sec VC leave bug).
+        set_current(chat_id, song)
+
         try:
-            # BUG FIX: audio_path parameter py-tgcalls 2.x mein exist nahi karta —
-            # hataaya. Video format progressive rakha hai (youtube.py) taaki ek hi
-            # URL mein audio+video mile; DASH splits avoid kiye.
             stream = MediaStream(
                 stream_url,
                 audio_parameters=AudioQuality.HIGH,
@@ -383,6 +385,7 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             await call_py.play(chat_id, stream)
 
         except NoActiveGroupCall:
+            set_current(chat_id, None)   # reset — play nahi hua
             await _safe_edit(
                 status_msg,
                 "❌ **Voice Chat band hai!**\n\n"
@@ -390,10 +393,7 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             )
             return
         except (ChannelInvalid, ChatAdminRequired, UserNotParticipant) as e:
-            # pytgcalls internally calls channels.GetChannels — ye tab fail hota hai jab:
-            # 1. Group regular group hai (supergroup nahi) — voice chat support nahi
-            # 2. Assistant ko group access nahi hai
-            # 3. Assistant group member nahi hai
+            set_current(chat_id, None)   # reset — play nahi hua
             log.warning("Channel access error in chat %s: %s", chat_id, e)
             await _safe_edit(
                 status_msg,
@@ -406,8 +406,8 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             )
             return
         except Exception as e:
+            set_current(chat_id, None)   # reset — play nahi hua
             err_str = str(e)
-            # ChannelInvalid string check — kabhi kabhi pyrogram wrapped exception aata hai
             if "CHANNEL_INVALID" in err_str or "channel_invalid" in err_str.lower():
                 log.warning("Channel invalid (wrapped) in chat %s: %s", chat_id, e)
                 await _safe_edit(
@@ -424,7 +424,7 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             )
             return
 
-        set_current(chat_id, song)
+        # set_current already called above (before play) — do NOT call again here
 
         # ── Set volume ─────────────────────────────────────────────
         if chat_id not in _volumes:
