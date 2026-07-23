@@ -444,17 +444,24 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                 "**Fix:** Assistant ko group mein add karo → Admin banao → phir `/play` try karo. 🎵"
             )
             return
-        except json.JSONDecodeError:
-            # ROOT CAUSE: pytgcalls ka internal check_stream() ffprobe se khali
-            # stdout milta hai jab ntgcalls call already remove ho chuki hoti hai
-            # (race condition: _join_vc() aur play() ke beech VC drop ho gayi).
+        except (json.JSONDecodeError, ProcessLookupError):
+            # ROOT CAUSE: ntgcalls race condition.
+            #
+            # Sequence inside pytgcalls/ffmpeg.py:
+            #   1. check_stream() runs ffprobe to verify the stream URL
+            #   2. ffprobe exits immediately (ntgcalls call already removed)
+            #   3. json.loads(stdout) → JSONDecodeError  (empty stdout)
+            #   4. pytgcalls' own except-clause calls ffprobe.kill()
+            #   5. Process already gone → ProcessLookupError
+            #   6. ProcessLookupError propagates up to our play() call
+            #
             # logs mein "Call not found, already removed" WARNING iske saath aata hai.
-            # Ye fatal error nahi hai — simply VC connection drop hua.
+            # Ye fatal error nahi hai — VC connection play() se pehle drop ho gayi.
             set_current(chat_id, None)
             await _leave_call(chat_id)
             log.warning(
                 "ntgcalls race condition in chat %s: call was removed before play() "
-                "could start (pytgcalls ffprobe got empty output → JSONDecodeError). "
+                "could start (pytgcalls ffprobe exited early → ProcessLookupError). "
                 "User ko retry karna chahiye.",
                 chat_id,
             )
