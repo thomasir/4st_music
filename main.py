@@ -54,6 +54,110 @@ logging.getLogger("ntgcalls").setLevel(logging.WARNING)
 
 log = logging.getLogger("ApexBot")
 
+# ── pytgcalls ffprobe patch ───────────────────────────────────────────────────
+# PROBLEM: pytgcalls 2.3.x ka check_stream() YouTube CDN URLs pe fail karta hai.
+#
+# Root cause sequence (pytgcalls/ffmpeg.py):
+#   1. ffprobe chalta hai stream URL ke saath — bina User-Agent headers ke
+#   2. YouTube CDN (googlevideo.com) empty response deta hai (IP throttling
+#      ya missing User-Agent) → stdout = b''
+#   3. json.loads('') → JSONDecodeError  (line 56 of pytgcalls/ffmpeg.py)
+#   4. pytgcalls ka except block: ffprobe.kill() try karta hai
+#   5. ffprobe already exit ho chuka → ProcessLookupError (line 62)
+#   6. ProcessLookupError call_py.play() se propagate hoti hai → /play crash
+#
+# FIX: pytgcalls.types.stream.media_stream ka check_stream reference patch
+# karo. Patched version:
+#   a. ffprobe ko YouTube User-Agent headers ke saath chalata hai
+#   b. Agar woh bhi fail ho, minimal stream info return karta hai
+#   c. Streaming proceed hoti hai — ffmpeg actual format detection khud karta hai
+#
+# NOTE: media_stream.py mein check_stream "from pytgcalls.ffmpeg import check_stream"
+# se import hota hai, isliye module reference patch karna zaroori hai.
+
+def _apply_pytgcalls_ffprobe_patch():
+    import asyncio
+    import json
+    import logging as _logging
+
+    _plog = _logging.getLogger("ApexBot.ptc_patch")
+
+    _YT_HEADERS = (
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36\r\n"
+        "Referer: https://www.youtube.com/\r\n"
+    )
+
+    async def _safe_ffprobe(url: str, timeout: float = 12.0) -> dict:
+        """ffprobe ko proper headers ke saath chalao. Dict ya {} return karo."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffprobe",
+                "-headers", _YT_HEADERS,
+                "-v", "quiet",
+                "-print_format", "json",
+                "-show_streams",
+                url,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return {}
+            if stdout:
+                try:
+                    return json.loads(stdout.decode("utf-8")) or {}
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+        except Exception:
+            pass
+        return {}
+
+    async def _patched_check_stream(media_path, *args, **kwargs):
+        """
+        Replacement for pytgcalls.ffmpeg.check_stream.
+        YouTube CDN URLs pe fail hone par User-Agent ke saath retry karo,
+        aur phir bhi fail hone par minimal audio stream info return karo
+        taaki play() proceed ho sake.
+        """
+        url_str = str(media_path)
+
+        # Pehle proper headers ke saath try karo
+        result = await _safe_ffprobe(url_str)
+        if result:
+            return result
+
+        # Fallback: minimal audio stream descriptor
+        # pytgcalls ko batao stream audio hai — ffmpeg actual format detect karega
+        _plog.debug(
+            "ffprobe empty for %s — using minimal audio fallback", url_str[:80]
+        )
+        return {
+            "streams": [
+                {
+                    "codec_type": "audio",
+                    "codec_name": "aac",
+                    "sample_rate": "44100",
+                    "channels": 2,
+                }
+            ]
+        }
+
+    # Patch the reference inside media_stream module (where it's actually called)
+    try:
+        import pytgcalls.types.stream.media_stream as _ms_mod
+        _ms_mod.check_stream = _patched_check_stream
+        log.info("✅ pytgcalls ffprobe patch applied — YouTube CDN URLs will work")
+    except Exception as _e:
+        log.warning("⚠️ pytgcalls ffprobe patch failed: %s", _e)
+
+_apply_pytgcalls_ffprobe_patch()
+
 
 async def _start_client(client, name: str, max_retries: int = 10):
     """Start a Pyrogram client with FloodWait retry.
