@@ -141,6 +141,9 @@ async def search_song(query: str, is_video: bool = False) -> dict | None:
         "thumbnail":   info.get("thumbnail"),
         "webpage_url": info.get("webpage_url") or info.get("original_url", ""),
     }
+    # Cache stream URL by webpage_url so get_stream(webpage_url) returns from cache
+    if result['webpage_url'] and result['url']:
+        _cache_stream(result['webpage_url'], result['url'], result['duration'])
     _cache_search(query, result)
     return result
 
