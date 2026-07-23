@@ -20,7 +20,11 @@ import logging
 import random
 
 from pyrogram import Client, filters
-from pyrogram.errors import MessageNotModified, MessageIdInvalid, FloodWait, ChannelInvalid, ChatAdminRequired, UserNotParticipant
+from pyrogram.errors import (
+    MessageNotModified, MessageIdInvalid, FloodWait,
+    ChannelInvalid, ChatAdminRequired, UserNotParticipant,
+    UserAlreadyParticipant, InviteHashExpired, PeerIdInvalid,
+)
 from pyrogram.types import (
     Message, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 )
@@ -184,16 +188,76 @@ def np_card_text(song: Song, chat_id: int = 0) -> str:
 
 # ═══ CORE PLAY LOGIC ═══════════════════════════════════════════════
 
-async def _join_vc(chat_id: int):
-    """Ensure assistant is in the group VC."""
+async def _ensure_assistant_in_group(chat_id: int) -> bool:
+    """
+    Make sure the assistant account is a member of the group.
+
+    Flow:
+    1. Try get_chat — if it works, assistant already has access → done.
+    2. If not a member, ask the bot (which IS an admin) to create a fresh
+       invite link, then have the assistant join via that link.
+    3. Wait up to 8 s for Telegram to process the membership.
+
+    Returns True if assistant is (now) in the group, False otherwise.
+    """
+    # Step 1: check if assistant already knows this chat
     try:
         await assistant.get_chat(chat_id)
+        return True                            # already a member
+    except (UserNotParticipant, PeerIdInvalid, ChannelInvalid):
+        pass                                   # not a member — continue
     except Exception:
-        pass
+        pass                                   # unknown error — still try to join
+
+    # Step 2: bot creates a single-use invite link (bot must be admin with invite rights)
+    invite_link = None
     try:
-        await assistant.join_chat(chat_id)
-    except Exception:
-        pass
+        link_obj = await bot.create_chat_invite_link(
+            chat_id,
+            name="Assistant Auto-Join",
+            member_limit=1,          # single-use
+        )
+        invite_link = link_obj.invite_link
+        log.info("🔗 Invite link created for chat %s: %s", chat_id, invite_link)
+    except Exception as e:
+        log.warning("Could not create invite link for chat %s: %s", chat_id, e)
+        # Fallback: try exporting the primary invite link
+        try:
+            invite_link = await bot.export_chat_invite_link(chat_id)
+            log.info("🔗 Exported invite link for chat %s", chat_id)
+        except Exception as e2:
+            log.error("Could not export invite link for chat %s: %s", chat_id, e2)
+            return False
+
+    if not invite_link:
+        return False
+
+    # Step 3: assistant joins via the invite link
+    try:
+        await assistant.join_chat(invite_link)
+        log.info("✅ Assistant joined chat %s via invite link", chat_id)
+    except UserAlreadyParticipant:
+        log.info("ℹ️ Assistant already in chat %s", chat_id)
+    except InviteHashExpired:
+        log.warning("Invite link expired for chat %s — retrying with export", chat_id)
+        try:
+            fallback = await bot.export_chat_invite_link(chat_id)
+            await assistant.join_chat(fallback)
+        except Exception as e:
+            log.error("Fallback join also failed for chat %s: %s", chat_id, e)
+            return False
+    except Exception as e:
+        log.error("Assistant join_chat failed for chat %s: %s", chat_id, e)
+        return False
+
+    # Give Telegram a moment to propagate membership
+    await asyncio.sleep(1.5)
+    return True
+
+
+async def _join_vc(chat_id: int):
+    """Ensure assistant is in the group, then join VC. Returns True on success."""
+    return await _ensure_assistant_in_group(chat_id)
 
 
 async def _leave_call(chat_id: int):
@@ -288,8 +352,18 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             f"🎶 **{song.title[:60]}**"
         )
 
-        # Ensure assistant is in VC
-        await _join_vc(chat_id)
+        # Ensure assistant is in the group (auto-join via invite link if needed)
+        joined = await _join_vc(chat_id)
+        if not joined:
+            await _safe_edit(
+                status_msg,
+                "❌ **Assistant group join nahi kar paya!**\n\n"
+                "**Fix karo:**\n"
+                "1️⃣ Bot ko group ka **Admin** banao\n"
+                "2️⃣ Admin permissions mein **'Add Members'** ON karo\n"
+                "3️⃣ Phir `/play` dobara try karo 🎵"
+            )
+            return
         await asyncio.sleep(0.4)
 
         # ── Build & start stream ──────────────────────────────────
