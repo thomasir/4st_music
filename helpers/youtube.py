@@ -14,7 +14,9 @@ import aiohttp
 import logging
 import time
 import tempfile
-from urllib.parse import urlsplit
+import json
+import urllib.request
+from urllib.parse import quote_plus, urlsplit
 from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("ApexBot.youtube")
@@ -552,7 +554,74 @@ def _search_sync(query: str, audio_only: bool = True) -> dict | None:
     except Exception as e:
         log.error(f"yt-dlp fallback-search error: {e}")
 
+    # ── Last resort: search through Invidious ──────────────────────────────
+    # A blocked YouTube/Heroku IP can make yt-dlp fail before it even gets a
+    # video ID. Invidious can still return the ID, after which get_stream()
+    # uses its proxied audio fallback below.
+    fallback_entry = _invidious_search_sync(query)
+    if fallback_entry:
+        log.info(
+            "✅ Search OK (Invidious fallback): %r",
+            fallback_entry.get("title", query)[:50],
+        )
+        return fallback_entry
+
     log.error(f"❌ All search methods failed for: {query[:60]!r}")
+    return None
+
+
+def _invidious_search_sync(query: str) -> dict | None:
+    """Search public Invidious instances without inheriting bad proxy env."""
+    request_headers = {"User-Agent": "Mozilla/5.0 (compatible; ApexBot/1.0)"}
+    encoded_query = quote_plus(query)
+
+    for instance in _INVIDIOUS_INSTANCES:
+        try:
+            endpoint = f"{instance}/api/v1/search?q={encoded_query}&type=video"
+            request = urllib.request.Request(endpoint, headers=request_headers)
+            # ProxyHandler({}) is intentional: a malformed HTTP(S)_PROXY
+            # setting must not break this emergency search path.
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=10) as response:
+                if response.status != 200:
+                    continue
+                items = json.loads(response.read().decode("utf-8"))
+
+            result = next(
+                (
+                    item for item in items
+                    if item.get("type") == "video" and item.get("videoId")
+                ),
+                None,
+            )
+            if not result:
+                continue
+
+            thumbnails = result.get("videoThumbnails") or []
+            thumbnail = (
+                next(
+                    (
+                        item.get("url", "")
+                        for item in thumbnails
+                        if item.get("quality") in {"medium", "high"}
+                    ),
+                    "",
+                )
+                or (thumbnails[0].get("url", "") if thumbnails else "")
+            )
+            video_id = result["videoId"]
+            return {
+                "id": video_id,
+                "title": result.get("title") or query,
+                "webpage_url": f"https://www.youtube.com/watch?v={video_id}",
+                "duration": int(result.get("lengthSeconds", 0) or 0),
+                "thumbnail": thumbnail,
+                "uploader": result.get("author") or "",
+                "view_count": int(result.get("viewCount", 0) or 0),
+            }
+        except Exception as exc:
+            log.debug("Invidious search failed (%s): %s", instance, exc)
+            continue
     return None
 
 
