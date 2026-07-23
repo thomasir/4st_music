@@ -19,6 +19,7 @@ import json
 import os
 import logging
 import random
+import time as _time
 
 from pyrogram import Client, filters
 from pyrogram.errors import (
@@ -41,7 +42,7 @@ from helpers.queue import (
     Song, add_to_queue, get_current, set_current,
     queue_size, pop_queue, get_queue, clear_queue, is_active, shuffle_queue,
 )
-from helpers.youtube import get_stream, fmt_duration
+from helpers.youtube import get_stream, fmt_duration, clear_cache_for_url
 from database import (
     add_play_history, get_random_history_song, get_history_count,
     get_autoplay, set_autoplay,
@@ -120,6 +121,15 @@ _volumes:    dict[int, int]         = {}
 _play_locks: dict[int, asyncio.Lock] = {}
 _np_msgs:    dict[int, any]         = {}   # store last NP message per chat
 _paused:     dict[int, bool]        = {}   # BUG FIX: track paused state per chat
+
+# ── Stream-error retry state ──────────────────────────────────────
+# Used to detect an immediate EOF (ntgcalls "Reached end of the file") and
+# retry with a force-refreshed URL so the bot does not leave VC after 1 sec.
+_play_start_times:   dict[int, float] = {}   # chat_id → monotonic time of last play()
+_stream_retry_counts: dict[int, int]  = {}   # chat_id → retries attempted for current song
+
+MAX_STREAM_RETRIES      = 2   # max auto-retries per song before giving up
+PREMATURE_END_THRESHOLD = 12  # seconds — stream end within this time → treat as error
 
 
 def _get_lock(chat_id: int) -> asyncio.Lock:
@@ -290,13 +300,13 @@ async def _set_volume_bg(chat_id: int):
         pass
 
 
-async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False):
+async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False, force_refresh: bool = False):
     """Core: resolve stream → join VC → start playback → show NP card."""
     # BUG FIX: outer try/except — agar koi bhi unhandled exception aaye toh
     # user ko silently kuch nahi dikhta tha (create_task exceptions swallow karta hai).
     # Ab hamesha error message milega.
     try:
-        await _do_play_inner(chat_id, song, status_msg, is_video)
+        await _do_play_inner(chat_id, song, status_msg, is_video, force_refresh=force_refresh)
     except Exception as e:
         log.exception("_do_play unhandled crash in chat %s", chat_id)
         try:
@@ -309,7 +319,7 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
             pass
 
 
-async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = False):
+async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = False, force_refresh: bool = False):
     """Actual play logic — called by _do_play which wraps it in error handler."""
     async with _get_lock(chat_id):
 
@@ -336,7 +346,7 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
         # 90s mein fail ho jaayega aur user ko clear error milega.
         try:
             stream_url, audio_url, dur, http_headers = await asyncio.wait_for(
-                get_stream(source, is_video=is_video),
+                get_stream(source, is_video=is_video, force_refresh=force_refresh),
                 timeout=90.0,
             )
             if dur and not song.duration:
@@ -409,6 +419,9 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             )
             await asyncio.wait_for(call_py.play(chat_id, stream), timeout=25.0)
             log.info("✅ Voice playback started | chat=%s | title=%s", chat_id, song.title[:80])
+            # Track when this stream started so on_stream_end can detect immediate EOF.
+            _play_start_times[chat_id] = _time.monotonic()
+            _stream_retry_counts.pop(chat_id, None)  # reset retry counter on successful start
 
         except NoActiveGroupCall:
             set_current(chat_id, None)
@@ -1045,6 +1058,57 @@ async def loop_cmd(client: Client, message: Message):
 
 # ── Stream ended → auto-next ──────────────────────────────────────
 
+async def _retry_stream(chat_id: int, song: Song):
+    """Retry playing a song after an immediate EOF (expired/bad CDN URL).
+
+    Called from on_stream_end when the stream ended within PREMATURE_END_THRESHOLD
+    seconds — a signal that the CDN URL was expired or blocked, not that the song
+    genuinely finished.  Forces a fresh yt-dlp fetch (bypassing the URL cache) and
+    restarts playback.  Stops after MAX_STREAM_RETRIES to avoid infinite loops.
+    """
+    retry_count = _stream_retry_counts.get(chat_id, 0)
+    if retry_count >= MAX_STREAM_RETRIES:
+        log.warning(
+            "❌ Max stream retries (%d) reached for chat %s, giving up",
+            MAX_STREAM_RETRIES, chat_id,
+        )
+        clear_queue(chat_id)
+        await _leave_call(chat_id)
+        try:
+            await bot.send_message(
+                chat_id,
+                "❌ **Stream baar baar fail ho rahi hai!**\n\n"
+                "YouTube CDN URL expire/block ho rahi hai.\n"
+                "Thodi der baad dobara `/play` karo. 🎵"
+            )
+        except Exception:
+            pass
+        return
+
+    _stream_retry_counts[chat_id] = retry_count + 1
+    # Drop the cached (expired) URL so get_stream() fetches a fresh one.
+    source = song.webpage_url or song.url
+    if source:
+        clear_cache_for_url(source, song.is_video)
+
+    log.info(
+        "🔄 Stream retry %d/%d for chat %s | song=%s",
+        retry_count + 1, MAX_STREAM_RETRIES, chat_id, song.title[:50],
+    )
+    try:
+        status_msg = await bot.send_message(
+            chat_id,
+            f"🔄 **Auto-retry {retry_count + 1}/{MAX_STREAM_RETRIES}...**\n"
+            f"🎶 **{song.title[:55]}**\n"
+            f"_Fresh stream URL fetch ho rahi hai..._"
+        )
+        await _do_play(chat_id, song, status_msg, song.is_video, force_refresh=True)
+    except Exception as e:
+        log.warning("Stream retry failed for chat %s: %s", chat_id, e)
+        clear_queue(chat_id)
+        asyncio.create_task(_leave_call(chat_id))
+
+
 async def _auto_next(chat_id: int, song: Song):
     try:
         status_msg = await bot.send_message(
@@ -1091,13 +1155,34 @@ async def on_stream_end(client: PyTgCalls, update: StreamEnded):
     """Never await Telegram calls here — use create_task to prevent
     recursive MTProto update propagation (pytgcalls 2.x known issue)."""
     chat_id = update.chat_id
-
-    # Loop mode — replay current
     current = get_current(chat_id)
+
+    # ── Premature-end detection (expired / bad CDN URL) ───────────
+    # If a stream ends within PREMATURE_END_THRESHOLD seconds of starting,
+    # and the song had a real duration > 30s, it almost certainly hit an
+    # immediate EOF caused by an expired or IP-blocked CDN URL (the
+    # "bot 1 sec pe aake chala gaya" bug).  Retry with a fresh URL instead
+    # of advancing the queue or leaving VC.
+    elapsed = _time.monotonic() - _play_start_times.get(chat_id, 0)
+    if (
+        current
+        and elapsed < PREMATURE_END_THRESHOLD
+        and (current.duration or 0) > 30
+        and not _loop_enabled.get(chat_id)
+    ):
+        log.warning(
+            "⚡ Premature stream end detected | chat=%s | elapsed=%.1fs | song=%s — retrying",
+            chat_id, elapsed, current.title[:50],
+        )
+        asyncio.create_task(_retry_stream(chat_id, current))
+        return
+
+    # ── Loop mode — replay current ────────────────────────────────
     if _loop_enabled.get(chat_id) and current:
         asyncio.create_task(_auto_next(chat_id, current))
         return
 
+    # ── Normal end — advance queue ────────────────────────────────
     next_song = pop_queue(chat_id)
     if not next_song:
         # Autoplay mode — play random song from history

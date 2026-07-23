@@ -45,6 +45,26 @@ STREAM_TTL = 900
 SEARCH_TTL = 1800
 
 
+def _url_expiry_ttl(cdn_url: str, default_ttl: float = STREAM_TTL) -> float:
+    """Parse expire= from a googlevideo CDN URL and return a safe cache TTL.
+
+    YouTube CDN URLs carry an expire= Unix timestamp that can be much shorter
+    than STREAM_TTL.  Using a fixed 900-s TTL lets stale (already-expired) URLs
+    sit in the cache, causing ntgcalls shell_reader to hit EOF immediately and
+    the bot to leave VC after ~1 second.
+    """
+    import re as _re
+    m = _re.search(r"[?&]expire=(\d+)", cdn_url)
+    if not m:
+        return default_ttl
+    expire_epoch = int(m.group(1))
+    # Compare against wall-clock; cache itself uses monotonic time.
+    ttl_from_url = expire_epoch - time.time() - 120  # 2-min safety buffer
+    if ttl_from_url <= 0:
+        return 0.0  # URL already expired — must not be cached
+    return min(default_ttl, ttl_from_url)
+
+
 def _stream_key(url: str, is_video: bool) -> tuple[str, bool]:
     return url.strip(), is_video
 
@@ -68,13 +88,24 @@ def _cache_stream(
     dur: int,
     headers: dict | None = None,
 ):
+    # Respect the URL's own expiry so we never serve an already-expired CDN URL.
+    ttl = _url_expiry_ttl(su) if su else STREAM_TTL
+    if ttl <= 0:
+        log.debug("Skipping cache for expired/expiring CDN URL: %s", (su or "")[:80])
+        return
     _stream_cache[_stream_key(url, is_video)] = (
         su,
         audio_url,
         dur,
         headers or {},
-        time.monotonic() + STREAM_TTL,
+        time.monotonic() + ttl,
     )
+
+
+def clear_cache_for_url(url: str, is_video: bool = False):
+    """Remove a URL from the stream cache so the next play fetches a fresh URL."""
+    _stream_cache.pop(_stream_key(url, is_video), None)
+    _stream_cache.pop(_stream_key(url.strip(), is_video), None)
 
 
 def _cached_search(q: str, is_video: bool) -> dict | None:
