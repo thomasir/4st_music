@@ -1,12 +1,16 @@
 """
-gban.py — v4.0
+gban.py — v6.0
 Global ban system — sudo/owner only
+✅ Fixed filter operator precedence (proper parentheses)
 """
 
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from helpers.decorators import sudo_only
 from database import gban_user, ungban_user, is_gbanned, get_gban_count
+
+_gban_filter  = (filters.command(["gban"])  & filters.private) | (filters.command(["gban"])  & filters.group)
+_ungban_filter = (filters.command(["ungban"]) & filters.private) | (filters.command(["ungban"]) & filters.group)
 
 
 async def _resolve_user(client: Client, message: Message):
@@ -34,7 +38,7 @@ async def _resolve_user(client: Client, message: Message):
 
 # ── /gban ─────────────────────────────────────────────────────────
 
-@Client.on_message(filters.command(["gban"]) & filters.private | filters.command(["gban"]) & filters.group)
+@Client.on_message(_gban_filter)
 @sudo_only
 async def gban_cmd(client: Client, message: Message):
     user, ok = await _resolve_user(client, message)
@@ -59,7 +63,7 @@ async def gban_cmd(client: Client, message: Message):
         f"_Yeh user ab sab groups mein auto-ban hoga jahan bot hai._"
     )
 
-    from config import LOG_CHANNEL, OWNER_USERNAME
+    from config import LOG_CHANNEL
     if LOG_CHANNEL:
         try:
             await client.send_message(
@@ -75,7 +79,7 @@ async def gban_cmd(client: Client, message: Message):
 
 # ── /ungban ───────────────────────────────────────────────────────
 
-@Client.on_message(filters.command(["ungban"]) & filters.private | filters.command(["ungban"]) & filters.group)
+@Client.on_message(_ungban_filter)
 @sudo_only
 async def ungban_cmd(client: Client, message: Message):
     user, ok = await _resolve_user(client, message)

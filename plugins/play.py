@@ -31,7 +31,7 @@ from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError, AlreadyJoine
 from clients import bot, assistant, call_py
 from helpers.queue import (
     Song, add_to_queue, get_current, set_current,
-    queue_size, pop_queue, get_queue, clear_queue, is_active,
+    queue_size, pop_queue, get_queue, clear_queue, is_active, shuffle_queue,
 )
 from helpers.youtube import get_stream, fmt_duration
 from config import DOWNLOAD_DIR, FFMPEG_VOLUME_BOOST, LOG_CHANNEL, OWNER_USERNAME, BOT_NAME
@@ -50,13 +50,32 @@ def _ffmpeg_params() -> str:
 # ══ SAFE HELPERS ══════════════════════════════════════════════════
 
 async def _safe_edit(msg, text: str, markup=None, parse_mode=None):
+    """Edit text OR photo-caption message safely.
+
+    Pyrogram splits editing into two APIs:
+    - Text messages  → msg.edit(text)
+    - Photo/media    → msg.edit_caption(caption=text)
+    Calling the wrong one raises BadRequest silently in callbacks, which was
+    the reason NP-card buttons (pause/vol/loop) never updated the card when
+    the song had a thumbnail (photo message).
+    """
     try:
         kwargs = {}
         if markup:
             kwargs["reply_markup"] = markup
-        if parse_mode:
-            kwargs["parse_mode"] = parse_mode
-        await msg.edit(text, **kwargs)
+        # Detect photo/media messages
+        is_media = bool(
+            getattr(msg, "photo", None)
+            or getattr(msg, "video", None)
+            or getattr(msg, "document", None)
+            or getattr(msg, "audio", None)
+        )
+        if is_media:
+            await msg.edit_caption(caption=text, **kwargs)
+        else:
+            if parse_mode:
+                kwargs["parse_mode"] = parse_mode
+            await msg.edit(text, **kwargs)
     except (MessageNotModified, MessageIdInvalid):
         pass
     except FloodWait as e:
@@ -647,17 +666,15 @@ async def np_cmd(client: Client, message: Message):
 async def shuffle_cmd(client: Client, message: Message):
     asyncio.create_task(_safe_delete(message))
     chat_id = message.chat.id
-    from helpers.queue import _queues
-    q = _queues.get(chat_id, [])
-    if not q:
+    count = shuffle_queue(chat_id)
+    if not count:
         r = await client.send_message(chat_id, "❌ Queue khaali hai — shuffle kya karein? 😅")
         await asyncio.sleep(3)
         asyncio.create_task(_safe_delete(r))
         return
-    random.shuffle(q)
     r = await client.send_message(
         chat_id,
-        f"🔀 **Queue shuffle ho gaya!** `{len(q)}` songs.\n_Maza aayega ab!_ 🎵"
+        f"🔀 **Queue shuffle ho gaya!** `{count}` songs.\n_Maza aayega ab!_ 🎵"
     )
     await asyncio.sleep(4)
     asyncio.create_task(_safe_delete(r))
@@ -827,12 +844,10 @@ async def cb_queue(client, cq):
 @Client.on_callback_query(filters.regex("^shuffle_cb$"))
 async def cb_shuffle(client, cq):
     chat_id = cq.message.chat.id
-    from helpers.queue import _queues
-    q = _queues.get(chat_id, [])
-    if not q:
+    count = shuffle_queue(chat_id)
+    if not count:
         return await cq.answer("📋 Queue khaali hai!", show_alert=True)
-    random.shuffle(q)
-    await cq.answer(f"🔀 Shuffled {len(q)} songs!")
+    await cq.answer(f"🔀 Shuffled {count} songs!")
 
 
 @Client.on_callback_query(filters.regex("^loop_cb$"))

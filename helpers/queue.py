@@ -1,8 +1,10 @@
 """
-queue.py — v5.0 — In-memory song queue per chat
-Song dataclass updated: url field for stream URL, thumbnail optional
+queue.py — v6.0 — In-memory song queue per chat
+Song dataclass: url = direct stream URL, thumbnail optional
+✅ Added shuffle_queue() — no more private dict access from play.py
 """
 
+import random
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -40,7 +42,7 @@ def set_current(chat_id: int, song: Optional[Song]):
 
 
 def add_to_queue(chat_id: int, song: Song) -> int:
-    """Add song to queue, return its position (1-indexed)."""
+    """Add song to queue, return its 1-indexed position."""
     _queues.setdefault(chat_id, []).append(song)
     return len(_queues[chat_id])
 
@@ -63,3 +65,11 @@ def queue_size(chat_id: int) -> int:
 
 def is_active(chat_id: int) -> bool:
     return chat_id in _current
+
+
+def shuffle_queue(chat_id: int) -> int:
+    """Shuffle the waiting queue in-place. Returns number of songs shuffled."""
+    q = _queues.get(chat_id, [])
+    if q:
+        random.shuffle(q)
+    return len(q)
