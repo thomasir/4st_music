@@ -158,6 +158,7 @@ def _opts(
         "no_warnings":              True,
         "noplaylist":               True,
         "geo_bypass":               True,
+        "geo_bypass_country":       "US",    # spoof US location — helps with regional blocks
         "check_formats":            False,   # don't pre-verify URL reachability
         "allow_unplayable_formats": False,
         # socket_timeout: bina iske yt-dlp cloud IPs pe indefinitely hang karta tha.
