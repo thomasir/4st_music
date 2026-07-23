@@ -134,7 +134,7 @@ def _opts(
         if audio_only
         else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=480]/best"
     )
-    clients = player_client or ["ios", "android", "mweb", "web"]
+    clients = player_client or ["tv_embedded", "ios", "android", "mweb", "web"]
     opts: dict = {
         "format":         fmt or default_fmt,
         "quiet":          True,
@@ -236,33 +236,42 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
     cookie = _resolve_cookie_file()
 
     if audio_only:
-        combos: list[tuple[str, list, bool]] = []
-        # Step 1: cookies + web client (if cookies available)
+        # tv_embedded is FIRST — it bypasses YouTube bot detection on cloud/datacenter IPs
+        # (Heroku, Railway, etc.) without requiring cookies or PO tokens.
+        combos: list[tuple[str, list, bool]] = [
+            ("ba/b",           ["tv_embedded"], True),
+            ("bestaudio/best", ["tv_embedded"], True),
+        ]
+        # Cookies + web client (if cookies available)
         if cookie:
             combos += [
-                ("ba/b",         ["web"], False),   # permissive shorthand
+                ("ba/b",           ["web"], False),
                 ("bestaudio/best", ["web"], False),
             ]
-        # Step 2: mobile clients WITHOUT cookies (they bypass datacenter blocks)
+        # Mobile clients as fallback
         combos += [
-            ("ba/b",                                           ["ios"],            True),
-            ("ba/b",                                           ["android"],        True),
-            ("ba/b",                                           ["mweb"],           True),
-            ("bestaudio/best",                                 ["ios", "android"], True),
+            ("ba/b",                                             ["ios"],            True),
+            ("ba/b",                                             ["android"],        True),
+            ("ba/b",                                             ["mweb"],           True),
+            ("bestaudio/best",                                   ["ios", "android"], True),
             ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["ios", "android", "mweb"], True),
-            # Step 3: last resort — any client, any format
-            ("ba/b",  ["ios", "android", "mweb", "web"], cookie is None),
-            ("best",  ["ios", "android", "mweb", "web"], cookie is None),
+            # Last resort — all clients
+            ("ba/b",  ["tv_embedded", "ios", "android", "mweb", "web"], True),
+            ("best",  ["tv_embedded", "ios", "android", "mweb", "web"], True),
         ]
     else:
+        # Video: prefer progressive (combined audio+video in one URL) to avoid DASH splits.
+        # DASH splits require two separate URLs which pytgcalls 2.x cannot handle natively.
         cookie_combos: list[tuple[str, list, bool]] = ([
-            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["web"], False),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["web"], False),
         ] if cookie else [])
-        combos = cookie_combos + [
-            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["ios", "android", "mweb"], True),
-            ("bestvideo[height<=480]+bestaudio/best[height<=480]/best", ["ios", "android", "mweb"], True),
-            ("best[height<=720]/best",                                  ["ios", "android", "mweb", "web"], cookie is None),
-            ("best",                                                     ["ios", "android", "mweb", "web"], cookie is None),
+        combos = [
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"], True),
+        ] + cookie_combos + [
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android", "mweb"], True),
+            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"], True),
+            ("best[height<=720]/best", ["tv_embedded", "ios", "android", "mweb", "web"], True),
+            ("best",                   ["tv_embedded", "ios", "android", "mweb", "web"], True),
         ]
 
     _RETRYABLE = (
@@ -303,12 +312,10 @@ def _search_sync(query: str, audio_only: bool = True) -> dict | None:
     if query.startswith("http://") or query.startswith("https://"):
         return _extract_sync(query, audio_only)
     try:
-        # BUG FIX: extract_flat=True — search ke time sirf metadata fetch karo.
-        # Stream URL baad mein get_stream() fetch karega.
-        # Bina flat ke yt-dlp full stream extraction karta hai jo YouTube
-        # bots ke liye block kar deta hai (403/429) → None return hota tha.
+        # extract_flat=True — search ke time sirf metadata fetch karo.
+        # tv_embedded client use karo — cloud IPs par bot detection bypass karta hai.
         search_opts = {
-            **_opts(audio_only),
+            **_opts(audio_only, player_client=["tv_embedded", "ios", "android"]),
             "extract_flat": True,
         }
         with yt_dlp.YoutubeDL(search_opts) as ydl:

@@ -264,13 +264,15 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
         # BUG FIX: http_headers MediaStream ko pass karo.
         # YouTube DASH CDN URLs bina User-Agent/origin headers ke 403 deta hai.
         try:
+            # BUG FIX: audio_path parameter py-tgcalls 2.x mein exist nahi karta —
+            # hataaya. Video format progressive rakha hai (youtube.py) taaki ek hi
+            # URL mein audio+video mile; DASH splits avoid kiye.
             stream = MediaStream(
                 stream_url,
                 audio_parameters=AudioQuality.HIGH,
-                video_parameters=VideoQuality.HD_720p,
-                audio_path=audio_url,
+                video_parameters=VideoQuality.HD_720p if is_video else VideoQuality.SD_360p,
                 ffmpeg_parameters=_ffmpeg_params(),
-                headers=http_headers or None,
+                headers=http_headers if http_headers else None,
             )
             await call_py.play(chat_id, stream)
 
@@ -831,7 +833,7 @@ async def cb_controls(client, cq):
         await cq.answer("⏸️ Paused!")
         try:
             await call_py.pause(chat_id)
-            # Update button to show Resume
+            _paused[chat_id] = True   # BUG FIX: track paused state via button too
             current = get_current(chat_id)
             if current:
                 await _safe_edit(
@@ -846,6 +848,7 @@ async def cb_controls(client, cq):
         await cq.answer("▶️ Resumed!")
         try:
             await call_py.resume(chat_id)
+            _paused[chat_id] = False   # BUG FIX: clear paused state via button too
             current = get_current(chat_id)
             if current:
                 await _safe_edit(
