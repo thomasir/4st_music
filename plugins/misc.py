@@ -460,60 +460,10 @@ async def about_cmd(client: Client, message: Message):
     )
 
 
-# ── /whois / /info @user ──────────────────────────────────────────
-
-@Client.on_message(filters.command(["whois", "info"]))
-async def whois_cmd(client: Client, message: Message):
-    """Full user info — reply or @username/ID."""
-    # Resolve target
-    if message.reply_to_message and message.reply_to_message.from_user:
-        user = message.reply_to_message.from_user
-    elif len(message.command) > 1:
-        try:
-            user = await client.get_users(message.command[1])
-        except Exception as e:
-            return await message.reply(f"❌ User nahi mila: `{e}`")
-    else:
-        user = message.from_user
-
-    if not user:
-        return await message.reply("❌ User nahi mila. Reply karo ya @username dein.")
-
-    # Fetch extra DB info
-    db_info     = await get_user_info(user.id)
-    name_hist   = await get_name_history(user.id)
-    common_chats = await get_common_chats_count(user.id)
-
-    first_seen_str = ""
-    if db_info and db_info.get("first_seen"):
-        import datetime
-        dt = datetime.datetime.utcfromtimestamp(db_info["first_seen"])
-        first_seen_str = dt.strftime("%d %b %Y")
-
-    lines = [
-        f"👤 **User Info**\n",
-        f"🏷️ **Name:** {user.mention}",
-        f"🆔 **ID:** `{user.id}`",
-    ]
-    if user.username:
-        lines.append(f"📛 **Username:** @{user.username}")
-    if user.is_bot:
-        lines.append("🤖 **Type:** Bot")
-    if user.is_premium:
-        lines.append("⭐ **Premium:** Yes")
-    if first_seen_str:
-        lines.append(f"📅 **First Seen:** {first_seen_str}")
-    if common_chats:
-        lines.append(f"💬 **Common Chats:** `{common_chats}`")
-
-    if name_hist and len(name_hist) > 1:
-        lines.append(f"\n**📜 Name History (last {min(len(name_hist),5)}):**")
-        for name, ts in name_hist[:5]:
-            import datetime
-            dt = datetime.datetime.utcfromtimestamp(ts)
-            lines.append(f"  • `{name}` — _{dt.strftime('%d %b %Y')}_")
-
-    await message.reply("\n".join(lines))
+# FIX: /whois and /info handlers were duplicated between misc.py and utility.py.
+# utility.py already has a complete, identical implementation. Keeping a second
+# handler here caused BOTH to fire on every /whois or /info command — resulting
+# in a double response in the chat. Removed the duplicate; utility.py handles it.
 
 
 # ── /id ───────────────────────────────────────────────────────────

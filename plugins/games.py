@@ -168,9 +168,19 @@ async def trivia_cmd(client: Client, message: Message):
     )
 
 
-@Client.on_message(filters.group & ~filters.command([]))
+# FIX: filters.command([]) with empty list matches NOTHING, so ~filters.command([])
+# matches EVERYTHING — including /play, /help, etc. — at default group priority 0.
+# This caused the trivia handler to run alongside ALL command handlers, creating
+# race conditions and potential interference. Fixed by:
+# 1. Using filters.text & ~filters.bot (proper non-command text filter)
+# 2. Moving to group=4 (lower priority — runs after all command handlers)
+# 3. Explicitly skipping messages that have a command attribute set
+@Client.on_message(filters.group & filters.text & ~filters.bot, group=4)
 async def trivia_answer(client: Client, message: Message):
     if not message.text:
+        return
+    # Skip command messages explicitly (belt-and-suspenders with the filter above)
+    if message.command:
         return
     chat_id = message.chat.id
     if chat_id not in _active_trivia:
