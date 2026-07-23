@@ -191,7 +191,7 @@ async def _leave_call(chat_id: int):
 async def _set_volume_bg(chat_id: int):
     vol = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
     try:
-        await call_py.change_volume_call(chat_id, vol)
+        await call_py.change_volume(chat_id, vol)
     except Exception:
         pass
 
@@ -482,7 +482,7 @@ async def pause_cmd(client: Client, message: Message):
         asyncio.create_task(_safe_delete(r))
         return
     try:
-        await call_py.pause_stream(chat_id)
+        await call_py.pause(chat_id)
         r = await client.send_message(
             chat_id,
             f"⏸️ **Paused!**\n\n🎶 _{current.title}_\n\n`/resume` se dobara chalao.",
@@ -506,7 +506,7 @@ async def resume_cmd(client: Client, message: Message):
         asyncio.create_task(_safe_delete(r))
         return
     try:
-        await call_py.resume_stream(chat_id)
+        await call_py.resume(chat_id)
         r = await client.send_message(
             chat_id,
             f"▶️ **Resumed!**\n\n🎶 _{current.title}_",
@@ -753,7 +753,7 @@ async def cb_controls(client, cq):
     if action == "pause":
         await cq.answer("⏸️ Paused!")
         try:
-            await call_py.pause_stream(chat_id)
+            await call_py.pause(chat_id)
             # Update button to show Resume
             current = get_current(chat_id)
             if current:
@@ -768,7 +768,7 @@ async def cb_controls(client, cq):
     elif action == "resume":
         await cq.answer("▶️ Resumed!")
         try:
-            await call_py.resume_stream(chat_id)
+            await call_py.resume(chat_id)
             current = get_current(chat_id)
             if current:
                 await _safe_edit(

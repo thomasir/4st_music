@@ -7,13 +7,13 @@ from pyrogram import Client, filters
 from pyrogram.types import Message
 from helpers.decorators import admin_only
 from database import add_filter, remove_filter, get_filters
+from config import SUDO_USERS
 
 
 @Client.on_message(filters.group & filters.text, group=2)
 async def check_filters(client: Client, message: Message):
     if not message.from_user:
         return
-    from config import SUDO_USERS
     if message.from_user.id in SUDO_USERS:
         return
     try:

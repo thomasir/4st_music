@@ -11,6 +11,7 @@ from collections import defaultdict
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions
 from pyrogram.errors import UserAdminInvalid
+from config import SUDO_USERS
 
 # chat_id -> {user_id -> [timestamps]}
 _flood: dict[int, dict[int, list]] = defaultdict(lambda: defaultdict(list))
@@ -78,7 +79,6 @@ async def flood_check(client: Client, message: Message):
     if not message.from_user:
         return
 
-    from config import SUDO_USERS
     if message.from_user.id in SUDO_USERS:
         return
 
