@@ -596,8 +596,9 @@ async def id_cmd(client: Client, message: Message):
             f"📛 Username: @{u.username or 'None'}"
         )
     else:
+        user_id_text = f"`{message.from_user.id}`" if message.from_user else "_Unknown (anonymous/channel)_"
         text = (
             f"💬 **Chat ID:** `{message.chat.id}`\n"
-            f"👤 **Your ID:** `{message.from_user.id}`"
+            f"👤 **Your ID:** {user_id_text}"
         )
     await message.reply(text)

@@ -106,9 +106,9 @@ def now_playing_buttons(url: str = "", paused: bool = False) -> InlineKeyboardMa
     return InlineKeyboardMarkup(rows)
 
 
-def np_text(song: Song) -> str:
+def np_text(song: Song, chat_id: int = 0) -> str:
     kind = "🎬 Video" if song.is_video else "🎵 Audio"
-    vol  = _volumes.get(0, int(_VOL_EFFECTIVE * 20))
+    vol  = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
     return (
         f"**{kind} — Now Playing** 🔥\n\n"
         f"🎶  **{song.title}**\n"
@@ -287,9 +287,8 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
         is_video     = is_video,
         requested_by = requested_by,
         webpage_url  = song_info.get("webpage_url", ""),
+        thumbnail    = song_info.get("thumbnail", ""),
     )
-    # Attach thumbnail if available
-    song.thumbnail = song_info.get("thumbnail", None)
 
     chat_id = message.chat.id
 
@@ -367,8 +366,8 @@ async def playforce_cmd(client: Client, message: Message):
         is_video=False,
         requested_by=requested_by,
         webpage_url=song_info.get("webpage_url", ""),
+        thumbnail=song_info.get("thumbnail", ""),
     )
-    song.thumbnail = song_info.get("thumbnail", None)
 
     asyncio.create_task(_do_play(chat_id, song, status_msg, False))
 
