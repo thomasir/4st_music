@@ -23,7 +23,7 @@ from database import (
     get_daily_last, set_daily_last,
     get_partner, marry_users, divorce_user
 )
-from config import OWNER_ID, DAILY_REWARD_MIN, DAILY_REWARD_MAX
+from config import OWNER_ID, DAILY_REWARD_MIN, DAILY_REWARD_MAX, MUST_JOIN
 
 # ══════════════════════════════════════════════════════
 # ── CLASSIC GAMES DATA
@@ -255,7 +255,7 @@ async def daily_cmd_group(client: Client, message: Message):
 
 
 async def _process_daily(client: Client, message: Message):
-    """BUG FIX: /daily was missing entirely — now implemented with 24h cooldown."""
+    """Daily reward — must-join check sirf yahan hoga (bonus redeem pe)."""
     user = message.from_user
     if not user:
         return
@@ -265,6 +265,28 @@ async def _process_daily(client: Client, message: Message):
             "❌ **Tumne bot start nahi kiya!**\n\n"
             "Bot ko DM mein `/start` karo pehle 💰"
         )
+
+    # ── Must-join check: sirf bonus claim pe ─────────────────────
+    if MUST_JOIN:
+        try:
+            member = await client.get_chat_member(MUST_JOIN, user.id)
+            # Kick/ban status = not a valid member
+            from pyrogram.enums import ChatMemberStatus
+            if member.status in (ChatMemberStatus.BANNED, ChatMemberStatus.LEFT):
+                raise ValueError("not a member")
+        except Exception:
+            from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+            return await message.reply(
+                f"⚠️ **Daily Bonus Claim Karne Ke Liye Join Karo!**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Bonus aur game rewards lene ke liye channel member hona zaroori hai.\n\n"
+                f"👉 **[Join Channel](https://t.me/{MUST_JOIN})**\n\n"
+                f"_Join karo phir `/daily` dobara karo!_",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📢 Join Channel ✅", url=f"https://t.me/{MUST_JOIN}"),
+                ]]),
+                disable_web_page_preview=True,
+            )
 
     now = int(time.time())
     last = await get_daily_last(user.id)

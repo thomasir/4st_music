@@ -272,24 +272,6 @@ async def start_private(client: Client, message: Message):
         bot_me = await client.get_me()
         _bot_username = bot_me.username
 
-    # Must-join check
-    if MUST_JOIN:
-        try:
-            await client.get_chat_member(MUST_JOIN, user_id)
-        except Exception:
-            await message.reply(
-                f"**⚠️ Pehle Join Karo!**\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━\n"
-                f"Bot use karne ke liye pehle hamara channel join karna zaroori hai!\n\n"
-                f"👉 **[Join Channel](https://t.me/{MUST_JOIN})**\n\n"
-                f"_Join karo phir /start karo!_",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📢 Join Channel ✅", url=f"https://t.me/{MUST_JOIN}"),
-                ]]),
-                disable_web_page_preview=True,
-            )
-            return
-
     # Economy first start reward
     reward_text = ""
     already = await has_started(user_id)

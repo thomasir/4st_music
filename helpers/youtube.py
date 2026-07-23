@@ -119,24 +119,28 @@ def _resolve_cookie_file() -> str | None:
 
 
 # ── yt-dlp options ───────────────────────────────────────────────
-def _opts(audio_only: bool = True, fmt: str | None = None, player_client: list | None = None) -> dict:
-    cookie = _resolve_cookie_file()
+def _opts(
+    audio_only: bool = True,
+    fmt: str | None = None,
+    player_client: list | None = None,
+    skip_cookies: bool = False,
+) -> dict:
+    # skip_cookies=True → mobile client attempts (mobile clients don't use
+    # browser session cookies — mixing them causes auth conflicts on YouTube).
+    cookie = None if skip_cookies else _resolve_cookie_file()
+
     default_fmt = (
         "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
         if audio_only
         else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=480]/best"
     )
-    # ── Mobile player clients ────────────────────────────────────
-    # Datacenter IPs (Heroku, Railway, etc.) pe YouTube web client
-    # format extraction block karta hai → "Requested format is not available".
-    # iOS/Android/mweb clients alag API endpoints use karte hain jo
-    # datacenter IPs pe bhi kaam karte hain bina cookies ke.
     clients = player_client or ["ios", "android", "mweb", "web"]
     opts: dict = {
         "format":         fmt or default_fmt,
         "quiet":          True,
         "no_warnings":    True,
         "noplaylist":     True,
+        "geo_bypass":     True,
         "extractor_args": {
             "youtube": {
                 "player_client": clients,
@@ -220,51 +224,74 @@ def _pick_url(info: dict, audio_only: bool) -> str:
 
 
 def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
-    # Try formats + player_client combos in order — stop at first success.
-    # Root cause of "All formats exhausted": YouTube datacenter IP blocks web
-    # player client. Mobile clients (ios/android) use different endpoints.
+    """Try (format, clients, skip_cookies) combos in priority order.
+
+    Key insight:
+    - Browser cookies are for YouTube WEB session → use with ["web"] client only.
+    - Mobile clients (ios/android/mweb) authenticate differently — mixing cookies
+      with them confuses YouTube and makes ALL formats appear unavailable.
+    - "ba/b" is yt-dlp shorthand (best-audio / best) — no ext filter, so it
+      accepts whatever codec the client returns rather than demanding m4a/webm.
+    """
+    cookie = _resolve_cookie_file()
+
     if audio_only:
-        format_client_combos = [
-            # Mobile clients first — these bypass datacenter IP restrictions
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["ios", "android", "mweb"]),
-            ("bestaudio/best",                                    ["ios", "android", "mweb"]),
-            # Fallback: web client with loose format
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["web"]),
-            ("bestaudio/best",                                    ["web"]),
-            # Last resort: any format, any client
-            ("best",                                              ["ios", "android", "mweb", "web"]),
+        combos: list[tuple[str, list, bool]] = []
+        # Step 1: cookies + web client (if cookies available)
+        if cookie:
+            combos += [
+                ("ba/b",         ["web"], False),   # permissive shorthand
+                ("bestaudio/best", ["web"], False),
+            ]
+        # Step 2: mobile clients WITHOUT cookies (they bypass datacenter blocks)
+        combos += [
+            ("ba/b",                                           ["ios"],            True),
+            ("ba/b",                                           ["android"],        True),
+            ("ba/b",                                           ["mweb"],           True),
+            ("bestaudio/best",                                 ["ios", "android"], True),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["ios", "android", "mweb"], True),
+            # Step 3: last resort — any client, any format
+            ("ba/b",  ["ios", "android", "mweb", "web"], cookie is None),
+            ("best",  ["ios", "android", "mweb", "web"], cookie is None),
         ]
     else:
-        format_client_combos = [
-            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["ios", "android", "mweb"]),
-            ("bestvideo[height<=480]+bestaudio/best[height<=480]/best", ["ios", "android", "mweb"]),
-            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["web"]),
-            ("best[height<=720]/best",                                  ["ios", "android", "mweb", "web"]),
-            ("best",                                                     ["ios", "android", "mweb", "web"]),
+        cookie_combos: list[tuple[str, list, bool]] = ([
+            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["web"], False),
+        ] if cookie else [])
+        combos = cookie_combos + [
+            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["ios", "android", "mweb"], True),
+            ("bestvideo[height<=480]+bestaudio/best[height<=480]/best", ["ios", "android", "mweb"], True),
+            ("best[height<=720]/best",                                  ["ios", "android", "mweb", "web"], cookie is None),
+            ("best",                                                     ["ios", "android", "mweb", "web"], cookie is None),
         ]
 
-    for fmt, clients in format_client_combos:
+    _RETRYABLE = (
+        "Requested format is not available",
+        "format is not available",
+        "No video formats found",
+        "Sign in to confirm",
+        "This video is not available",
+        "HTTP Error 403",
+        "HTTP Error 429",
+    )
+
+    for fmt, clients, skip_ck in combos:
         try:
-            with yt_dlp.YoutubeDL(_opts(audio_only, fmt=fmt, player_client=clients)) as ydl:
+            opts = _opts(audio_only, fmt=fmt, player_client=clients, skip_cookies=skip_ck)
+            with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
-                    log.debug(f"yt-dlp format={fmt!r} clients={clients} succeeded for {url[:60]}")
+                    log.debug(f"yt-dlp fmt={fmt!r} clients={clients} skip_ck={skip_ck} OK: {url[:55]}")
                     return info
         except yt_dlp.utils.DownloadError as e:
             err = str(e)
-            if (
-                "Requested format is not available" in err
-                or "format is not available" in err.lower()
-                or "No video formats found" in err
-                or "Sign in to confirm" in err
-                or "This video is not available" in err
-            ):
+            if any(r in err for r in _RETRYABLE):
                 log.warning(f"Format {fmt!r} clients={clients} not available, retrying with next…")
                 continue
             log.error(f"yt-dlp download error: {e}")
             return None
         except RuntimeError:
-            raise   # cookies missing — propagate up
+            raise
         except Exception as e:
             log.error(f"yt-dlp error: {e}")
             return None
