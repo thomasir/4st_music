@@ -96,34 +96,21 @@ def _resolve_cookie_file() -> str | None:
 
 
 # ── yt-dlp options ───────────────────────────────────────────────
-def _opts(audio_only: bool = True) -> dict:
+def _opts(audio_only: bool = True, fmt: str | None = None) -> dict:
     cookie = _resolve_cookie_file()
-    # FIX: bestaudio/best kuch videos pe "Requested format not available" deta tha.
-    # Reason: age-restricted ya region-locked videos mein audio-only DASH streams
-    # nahi hote. Long fallback chain use karo taaki koi na koi format mile.
-    audio_fmt = (
-        "bestaudio[ext=m4a]"
-        "/bestaudio[ext=webm]"
-        "/bestaudio[acodec!=none]"
-        "/bestaudio"
-        "/best[acodec!=none][height<=480]"
-        "/best[height<=480]"
-        "/best"
-    )
-    video_fmt = (
-        "bestvideo[height<=1080]+bestaudio"
-        "/best[height<=1080]"
-        "/best[height<=720]"
-        "/best"
-    )
+    if not cookie:
+        raise RuntimeError(
+            "❌ YOUTUBE_COOKIES nahi mili! Bot sirf cookies ke saath play karta hai.\n"
+            "Heroku config mein YOUTUBE_COOKIES set karo."
+        )
+    default_fmt = "bestaudio/best" if audio_only else "bestvideo+bestaudio/best[height<=1080]/best"
     opts: dict = {
-        "format":      audio_fmt if audio_only else video_fmt,
+        "format":      fmt or default_fmt,
         "quiet":       True,
         "no_warnings": True,
         "noplaylist":  True,
+        "cookiefile":  cookie,
     }
-    if cookie:
-        opts["cookiefile"] = cookie
     return opts
 
 
@@ -145,15 +132,34 @@ def _pick_url(info: dict, audio_only: bool) -> str:
 
 
 def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
-    try:
-        with yt_dlp.YoutubeDL(_opts(audio_only)) as ydl:
-            return ydl.extract_info(url, download=False) or None
-    except yt_dlp.utils.DownloadError as e:
-        log.error(f"yt-dlp download error: {e}")
-        return None
-    except Exception as e:
-        log.error(f"yt-dlp error: {e}")
-        return None
+    # Try formats in order — stop at first success.
+    # "Requested format is not available" → next format; any other error → give up.
+    formats = (
+        ["bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", "bestaudio/best", "best"]
+        if audio_only else
+        ["bestvideo+bestaudio/best[height<=1080]/best", "best[height<=1080]/best", "best"]
+    )
+    for fmt in formats:
+        try:
+            with yt_dlp.YoutubeDL(_opts(audio_only, fmt=fmt)) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if info:
+                    log.debug(f"yt-dlp format={fmt!r} succeeded for {url[:60]}")
+                    return info
+        except yt_dlp.utils.DownloadError as e:
+            err = str(e)
+            if "Requested format is not available" in err:
+                log.warning(f"Format {fmt!r} not available, retrying with next…")
+                continue
+            log.error(f"yt-dlp download error: {e}")
+            return None
+        except RuntimeError:
+            raise   # cookies missing — propagate up
+        except Exception as e:
+            log.error(f"yt-dlp error: {e}")
+            return None
+    log.error(f"All formats exhausted for {url[:60]}")
+    return None
 
 
 def _search_sync(query: str, audio_only: bool = True) -> dict | None:
