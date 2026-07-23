@@ -8,7 +8,6 @@ misleading "token" error.
 
 import os
 import re
-import yt_dlp
 import asyncio
 import aiohttp
 import logging
@@ -16,9 +15,22 @@ import time
 import tempfile
 import json
 import shutil
+import sys
 import urllib.request
 from urllib.parse import quote_plus, urljoin, urlsplit
 from concurrent.futures import ThreadPoolExecutor
+
+# The build hook installs the bgutil yt-dlp plugin under vendor/. Add that
+# namespace before importing yt-dlp so plugin discovery also works when this
+# module is imported outside the main process.
+_BGUTIL_PLUGIN_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "vendor", "bgutil-ytdlp-pot-provider", "plugin",
+)
+if os.path.isdir(_BGUTIL_PLUGIN_DIR) and _BGUTIL_PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, _BGUTIL_PLUGIN_DIR)
+
+import yt_dlp
 
 log = logging.getLogger("ApexBot.youtube")
 _exec = ThreadPoolExecutor(max_workers=6)
@@ -153,6 +165,14 @@ def _opts(
     extractor_args: dict = {
         "player_client": clients,
     }
+    provider_args: dict = {
+        "youtube": extractor_args,
+    }
+    bgutil_server = _bgutil_server_home()
+    if os.path.isfile(os.path.join(bgutil_server, "src", "generate_once.ts")):
+        provider_args["youtubepot-bgutilscript"] = {
+            "server_home": [bgutil_server],
+        }
 
     opts: dict = {
         "format":                   fmt if fmt is not None else default_fmt,
@@ -170,9 +190,7 @@ def _opts(
         # The build hook installs Deno when the host does not provide it.
         "js_runtimes":              {"deno": {"path": _deno_path()}},
         "remote_components":         ["ejs:github"],
-        "extractor_args": {
-            "youtube": extractor_args,
-        },
+        "extractor_args":            provider_args,
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -196,6 +214,14 @@ def _opts(
         # An empty proxy explicitly disables inherited HTTP(S)_PROXY values.
         opts["proxy"] = proxy
     return opts
+
+
+def _bgutil_server_home() -> str:
+    """Return the build-bundled bgutil provider server directory."""
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "vendor", "bgutil-ytdlp-pot-provider", "server",
+    )
 
 
 def _deno_path() -> str:

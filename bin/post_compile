@@ -88,3 +88,60 @@ if [ -x "$DENO_DIR/deno" ]; then
 elif command -v deno >/dev/null 2>&1; then
   deno --version | head -3
 fi
+
+# bgutil provides the current YouTube Proof-of-Origin Token provider for
+# yt-dlp. Public Invidious/Piped instances are not a dependable production
+# source, so bundle the pinned plugin and its Deno script provider at build
+# time. The Python plugin is loaded from vendor/.../plugin via youtube.py.
+BGUTIL_VERSION="1.3.1"
+BGUTIL_HOME="$BUILD_DIR/vendor/bgutil-ytdlp-pot-provider"
+BGUTIL_TMP="$BUILD_DIR/vendor/bgutil_tmp"
+BGUTIL_ZIP="$BGUTIL_TMP/bgutil.zip"
+# The release asset contains only the Python plugin. Use the tagged source
+# archive because it also contains server/src/generate_once.ts and the locked
+# Deno/npm dependency manifests.
+BGUTIL_URL="https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/${BGUTIL_VERSION}.zip"
+
+rm -rf "$BGUTIL_HOME" "$BGUTIL_TMP"
+mkdir -p "$BGUTIL_HOME" "$BGUTIL_TMP"
+echo "-----> Installing bgutil yt-dlp PO-token provider v${BGUTIL_VERSION}"
+
+if curl -fsSL --retry 3 --retry-delay 3 "$BGUTIL_URL" -o "$BGUTIL_ZIP" \
+  && python - "$BGUTIL_ZIP" "$BGUTIL_TMP/extracted" <<'PY'
+import os
+import sys
+import zipfile
+
+archive_path, output_dir = sys.argv[1:3]
+with zipfile.ZipFile(archive_path) as archive:
+    archive.extractall(output_dir)
+PY
+then
+  BGUTIL_ROOT=$(find "$BGUTIL_TMP/extracted" -mindepth 1 -maxdepth 1 -type d -print -quit)
+  cp -R "$BGUTIL_ROOT/plugin" "$BGUTIL_HOME/plugin"
+  cp -R "$BGUTIL_ROOT/server" "$BGUTIL_HOME/server"
+
+  # Deno resolves the provider's npm: dependencies from package.json and
+  # installs the native canvas permission required by bgutils-js.
+  if [ -x "$DENO_DIR/deno" ]; then
+    BGUTIL_DENO="$DENO_DIR/deno"
+  else
+    BGUTIL_DENO="$(command -v deno || true)"
+  fi
+  if [ -n "$BGUTIL_DENO" ]; then
+    if (
+      cd "$BGUTIL_HOME/server"
+      "$BGUTIL_DENO" install --allow-scripts=npm:canvas --frozen
+    ); then
+      echo "       bgutil plugin + Deno provider installed ✅"
+    else
+      echo "       ⚠️ bgutil Deno dependency install failed; built-in yt-dlp providers remain available"
+    fi
+  else
+    echo "       ⚠️ Deno unavailable; bgutil plugin will remain inactive"
+  fi
+else
+  echo "       ⚠️ bgutil download failed; yt-dlp will use its built-in providers"
+fi
+
+rm -rf "$BGUTIL_TMP"
