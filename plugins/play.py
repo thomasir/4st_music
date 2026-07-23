@@ -15,6 +15,7 @@ play.py — v6.0 ULTIMATE
 """
 
 import asyncio
+import json
 import os
 import logging
 import random
@@ -443,10 +444,43 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                 "**Fix:** Assistant ko group mein add karo → Admin banao → phir `/play` try karo. 🎵"
             )
             return
+        except json.JSONDecodeError:
+            # ROOT CAUSE: pytgcalls ka internal check_stream() ffprobe se khali
+            # stdout milta hai jab ntgcalls call already remove ho chuki hoti hai
+            # (race condition: _join_vc() aur play() ke beech VC drop ho gayi).
+            # logs mein "Call not found, already removed" WARNING iske saath aata hai.
+            # Ye fatal error nahi hai — simply VC connection drop hua.
+            set_current(chat_id, None)
+            await _leave_call(chat_id)
+            log.warning(
+                "ntgcalls race condition in chat %s: call was removed before play() "
+                "could start (pytgcalls ffprobe got empty output → JSONDecodeError). "
+                "User ko retry karna chahiye.",
+                chat_id,
+            )
+            await _safe_edit(
+                status_msg,
+                "❌ **Voice Chat connection drop ho gayi!**\n\n"
+                "Stream shuru hone se pehle Voice Chat band ho gayi.\n"
+                "Dobara `/play` try karo — usually 2nd try pe theek ho jaata hai. 🎵"
+            )
+            return
         except Exception as e:
             set_current(chat_id, None)
             await _leave_call(chat_id)   # VC properly clean karo — warna bot VC mein stuck rehta hai
             err_str = str(e)
+            # ntgcalls "call not found" strings — gracefully handle karo
+            if any(kw in err_str.lower() for kw in ("not found", "already removed", "ntgcalls")):
+                log.warning(
+                    "ntgcalls call-not-found error in chat %s: %s",
+                    chat_id, e,
+                )
+                await _safe_edit(
+                    status_msg,
+                    "❌ **Voice Chat connection problem!**\n\n"
+                    "Voice Chat restart ho gayi thi. Dobara `/play` try karo. 🎵"
+                )
+                return
             if "CHANNEL_INVALID" in err_str or "channel_invalid" in err_str.lower():
                 log.warning("Channel invalid (wrapped) in chat %s: %s", chat_id, e)
                 await _safe_edit(
