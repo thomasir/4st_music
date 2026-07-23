@@ -15,6 +15,7 @@ import logging
 import time
 import tempfile
 import json
+import shutil
 import urllib.request
 from urllib.parse import quote_plus, urlsplit
 from concurrent.futures import ThreadPoolExecutor
@@ -140,20 +141,18 @@ def _opts(
     # browser session cookies — mixing them causes auth conflicts on YouTube).
     cookie = None if skip_cookies else _resolve_cookie_file()
 
+    # Do not force the old mobile clients here. YouTube now gates many of
+    # their formats behind PO tokens, while current yt-dlp knows how to pick
+    # the best compatible clients when "default" is used.
     default_fmt = (
-        "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+        "bestaudio/best"
         if audio_only
-        else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=480]/best"
+        else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best"
     )
-    clients = player_client or ["tv_embedded", "ios", "android", "mweb"]
+    clients = player_client or ["default"]
     extractor_args: dict = {
         "player_client": clients,
     }
-    # skip_webpage=True: skip JS player extraction entirely.
-    # Cloud/Heroku IPs often fail JS player extraction → "Requested format is not available".
-    # tv_embedded + skip_webpage is the most reliable combo on restricted IPs.
-    if skip_webpage:
-        extractor_args["skip"] = ["webpage", "configs", "js"]
 
     opts: dict = {
         "format":                   fmt if fmt is not None else default_fmt,
@@ -167,6 +166,10 @@ def _opts(
         # socket_timeout: bina iske yt-dlp cloud IPs pe indefinitely hang karta tha.
         # 20s per attempt reasonable hai; combos ka loop overall timeout control karta hai.
         "socket_timeout":           20,
+        # yt-dlp's YouTube extractor needs the external JS challenge solver.
+        # The build hook installs Deno when the host does not provide it.
+        "js_runtimes":              {"deno": {"path": _deno_path()}},
+        "remote_components":         ["ejs:github"],
         "extractor_args": {
             "youtube": extractor_args,
         },
@@ -193,6 +196,22 @@ def _opts(
         # An empty proxy explicitly disables inherited HTTP(S)_PROXY values.
         opts["proxy"] = proxy
     return opts
+
+
+def _deno_path() -> str:
+    """Return the bundled/system Deno path used by yt-dlp EJS."""
+    configured = os.environ.get("DENO_PATH", "").strip()
+    if configured and os.path.isfile(configured):
+        return configured
+
+    bundled = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "vendor", "deno", "bin", "deno",
+    )
+    if os.path.isfile(bundled):
+        return bundled
+
+    return shutil.which("deno") or "deno"
 
 
 def _valid_proxy_url(value: str) -> str | None:
@@ -375,41 +394,23 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
     # URLs (i.ytimg.com) on cloud/Heroku IPs. _is_streamable_url() rejects those.
     #
     # Combo tuple: (format_selector, player_clients, ignore_no_formats, skip_webpage)
-    # skip_webpage=True: skips JS player extraction entirely — most reliable on Heroku/cloud IPs.
-    # tv_embedded + skip_webpage is the #1 fix for "Requested format is not available" on cloud IPs.
+    # Keep the list short: every failed client adds latency and can trigger
+    # more YouTube rate limiting. The default client set is maintained by
+    # yt-dlp and is the most reliable option for current YouTube changes.
     if audio_only:
         combos: list[tuple[str | None, list, bool, bool]] = [
-            # Best combos for cloud/Heroku IPs — tv_embedded bypasses most restrictions
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["tv_embedded"],                    False, True),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["tv_embedded"],                    False, False),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["ios"],                             False, True),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["ios"],                             False, False),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["android"],                        False, True),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["android"],                        False, False),
-            # sabr client — YouTube's Streaming ABR, designed to bypass IP-level restrictions
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["sabr"],                           False, False),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["sabr", "tv_embedded"],            False, False),
-            # Broader client combos
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["tv_embedded", "ios", "android"],  False, True),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["mweb"],                           False, False),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["web"],                            False, False),
-            # Last resort — only accept if _is_streamable_url validates the CDN URL
-            (None,                                                     ["tv_embedded"],                    True,  True),
-            (None,                                                     ["ios"],                            True,  True),
-            (None,                                                     ["android"],                        True,  False),
-            (None,                                                     ["tv_embedded", "ios", "android", "mweb"], True, False),
+            ("bestaudio/best", ["default"], False, False),
+            ("bestaudio/best", ["web_embedded"], False, False),
+            ("bestaudio/best", ["tv_downgraded"], False, False),
+            ("bestaudio/best", ["ios"], False, False),
+            (None,              ["default"], True,  False),
         ]
     else:
         combos = [
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False, True),
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False, False),
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android"],                   False, True),
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android"],                   False, False),
-            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"],           False, False),
-            ("best[height<=720]/best",                                               ["tv_embedded", "ios", "android"],    False, True),
-            ("best[height<=720]/best",                                               ["sabr"],                             False, False),
-            (None,                                                                   ["tv_embedded", "ios"],               True,  True),
-            (None,                                                                   ["tv_embedded", "ios", "android"],    True,  False),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["default"],       False, False),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["web_embedded"], False, False),
+            ("best[height<=720]/best",                                               ["ios"],          False, False),
+            (None,                                                                   ["default"],      True,  False),
         ]
 
     _RETRYABLE = (
@@ -504,7 +505,7 @@ def _search_sync(query: str, audio_only: bool = True) -> dict | None:
     # nothing — causing silent "Nahi mila" errors with no log entry.
     try:
         search_opts = {
-            **_opts(audio_only, player_client=["tv_embedded", "ios", "android"]),
+            **_opts(audio_only, player_client=["default"]),
             "extract_flat": "in_playlist",
             "check_formats": False,
             "noplaylist":    False,   # CRITICAL FIX: allow ytsearch playlist processing
@@ -532,7 +533,7 @@ def _search_sync(query: str, audio_only: bool = True) -> dict | None:
     log.info(f"🔄 Trying full-extraction fallback search for: {query[:50]!r}")
     try:
         fallback_opts = {
-            **_opts(audio_only, player_client=["ios", "tv_embedded", "android"]),
+            **_opts(audio_only, player_client=["default"]),
             "noplaylist": False,   # same fix applies here
         }
         with yt_dlp.YoutubeDL(fallback_opts) as ydl:
@@ -721,6 +722,9 @@ async def get_stream(
 # Instead we use /latest_version?local=true which makes Invidious proxy the
 # stream through its own server, bypassing the IP block entirely.
 _INVIDIOUS_INSTANCES = [
+    # This instance currently serves proxied audio even when its public API
+    # endpoints are unavailable. Keep it first for the emergency stream path.
+    "https://invidious.f5.si",
     "https://inv.nadeko.net",
     "https://invidious.privacydev.net",
     "https://iv.melmac.space",
@@ -733,6 +737,10 @@ _INVIDIOUS_INSTANCES = [
     "https://yt.drgnz.club",
     "https://invidious.einfachzocken.eu",
 ]
+
+# Common YouTube audio itags. These let the fallback work even when an
+# Invidious instance disables /api/v1/videos but still serves /latest_version.
+_INVIDIOUS_AUDIO_ITAGS = (251, 140, 250, 139)
 
 
 def _extract_video_id(url: str) -> str | None:
@@ -769,15 +777,19 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
         try:
             # Step 1: get video metadata to find the best itag
             api_url = f"{instance}/api/v1/videos/{video_id}"
+            data: dict = {}
             async with aiohttp.ClientSession(timeout=api_timeout) as session:
                 async with session.get(api_url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-                    if resp.status != 200:
-                        log.debug(f"Invidious {instance} → HTTP {resp.status}")
-                        continue
-                    data = await resp.json(content_type=None)
+                    if resp.status == 200:
+                        data = await resp.json(content_type=None)
+                    else:
+                        log.debug(
+                            f"Invidious {instance} metadata → HTTP {resp.status}; "
+                            "trying known itags"
+                        )
 
             duration = int(data.get("lengthSeconds", 0) or 0)
-            itag: int | None = None
+            itags: list[int] = []
 
             if audio_only:
                 # adaptiveFormats has separate audio streams
@@ -787,8 +799,15 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                     if f.get("type", "").startswith("audio/") and f.get("itag")
                 ]
                 if audio_fmts:
-                    best = max(audio_fmts, key=lambda f: int(f.get("bitrate", 0) or 0))
-                    itag = best["itag"]
+                    itags.append(
+                        int(max(
+                            audio_fmts,
+                            key=lambda f: int(f.get("bitrate", 0) or 0),
+                        )["itag"])
+                    )
+                # API-disabled instances still commonly support these
+                # progressive proxy routes.
+                itags.extend(_INVIDIOUS_AUDIO_ITAGS)
             else:
                 # formatStreams has muxed (video+audio) progressive formats
                 fmt_streams = data.get("formatStreams") or []
@@ -802,47 +821,51 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                             return int((f.get("resolution") or "0p").rstrip("p"))
                         except ValueError:
                             return 0
-                    best = max(video_fmts, key=_res)
-                    itag = best["itag"]
+                    itags.append(int(max(video_fmts, key=_res)["itag"]))
+                itags.extend((18, 22))
 
-            if not itag:
+            if not itags:
                 log.debug(f"Invidious {instance} — no itag found in response")
                 continue
 
-            # Step 2: build proxied stream URL.
-            # local=true → Invidious streams through its own server (bypasses Heroku IP block).
-            # local=false/omitted → Invidious redirects to googlevideo.com (still blocked).
-            su = f"{instance}/latest_version?id={video_id}&itag={itag}&local=true"
-
-            # Step 3: light GET range check (1 byte) to confirm this instance proxies OK.
-            # HEAD is not used — many Invidious instances reject HEAD on /latest_version.
-            try:
-                async with aiohttp.ClientSession(timeout=head_timeout) as s:
-                    async with s.get(
-                        su,
-                        headers={"Range": "bytes=0-0"},
-                        allow_redirects=True,
-                    ) as r:
-                        if r.status not in (200, 206):
-                            log.debug(
-                                f"Invidious proxy check {r.status} — skipping {instance}"
-                            )
-                            continue
-                        # Make sure it's not an HTML error page
-                        ct = r.headers.get("Content-Type", "")
-                        if "text/html" in ct:
-                            log.debug(
-                                f"Invidious proxy returned HTML — skipping {instance}"
-                            )
-                            continue
-            except Exception as e:
-                log.debug(f"Invidious proxy check failed ({instance}): {e}")
-                continue
-
-            log.info(
-                f"✅ Invidious proxy OK | {instance} | {video_id} | itag={itag}"
-            )
-            return su, duration
+            # Step 2: build/check proxied stream URLs. local=true makes
+            # Invidious re-serve the media instead of redirecting to the
+            # blocked googlevideo.com CDN.
+            for itag in dict.fromkeys(itags):
+                su = (
+                    f"{instance}/latest_version?"
+                    f"id={video_id}&itag={itag}&local=true"
+                )
+                try:
+                    async with aiohttp.ClientSession(timeout=head_timeout) as s:
+                        async with s.get(
+                            su,
+                            headers={"Range": "bytes=0-0"},
+                            allow_redirects=True,
+                        ) as r:
+                            if r.status not in (200, 206):
+                                log.debug(
+                                    f"Invidious proxy {instance} itag={itag} "
+                                    f"→ HTTP {r.status}"
+                                )
+                                continue
+                            ct = r.headers.get("Content-Type", "").lower()
+                            if "text/html" in ct or "application/json" in ct:
+                                log.debug(
+                                    f"Invidious proxy {instance} itag={itag} "
+                                    f"returned {ct or 'unknown content'}"
+                                )
+                                continue
+                    log.info(
+                        f"✅ Invidious proxy OK | {instance} | "
+                        f"{video_id} | itag={itag}"
+                    )
+                    return su, duration
+                except Exception as e:
+                    log.debug(
+                        f"Invidious proxy check failed "
+                        f"({instance}, itag={itag}): {e}"
+                    )
 
         except Exception as e:
             log.debug(f"Invidious {instance} error: {e}")
