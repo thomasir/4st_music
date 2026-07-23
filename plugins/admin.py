@@ -9,7 +9,7 @@ import asyncio
 import time
 from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.enums import ChatMemberStatus
+from pyrogram.enums import ChatMemberStatus, ChatMembersFilter
 from pyrogram.errors import UserAdminInvalid, PeerIdInvalid, ChatAdminRequired
 
 from helpers.decorators import admin_only, owner_only
@@ -426,7 +426,7 @@ async def admins_cmd(client: Client, message: Message):
     msg = await message.reply("⏳ Loading admins...")
     admins = []
     async for member in client.get_chat_members(
-        message.chat.id, filter=None
+        message.chat.id, filter=ChatMembersFilter.ADMINISTRATORS
     ):
         if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
             u = member.user
@@ -455,7 +455,7 @@ async def report_cmd(client: Client, message: Message):
 
     # Notify all admins
     mention_list = []
-    async for member in client.get_chat_members(message.chat.id, filter=None):
+    async for member in client.get_chat_members(message.chat.id, filter=ChatMembersFilter.ADMINISTRATORS):
         if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
             if not member.user.is_bot:
                 mention_list.append(member.user.mention)
@@ -498,7 +498,7 @@ async def unbanall_cmd(client: Client, message: Message):
     msg = await message.reply("⏳ Unbanning all banned users...")
     unbanned = 0
     async for member in client.get_chat_members(
-        message.chat.id, filter=None
+        message.chat.id, filter=ChatMembersFilter.BANNED
     ):
         if member.status == ChatMemberStatus.BANNED:
             try:
