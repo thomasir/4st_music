@@ -113,7 +113,11 @@ def _resolve_cookie_file() -> str | None:
         except Exception as e:
             log.warning(f"Cookie env parse failed: {e}")
 
-    log.info("No YouTube cookies configured; using public extraction")
+    log.warning(
+        "⚠️  No YouTube cookies found! Heroku/cloud IPs need cookies to stream YouTube. "
+        "Set YOUTUBE_COOKIES env var in Heroku dashboard (Netscape format). "
+        "Export from Chrome: F12 → Application → Cookies, or use a browser extension like 'Get cookies.txt'."
+    )
     _COOKIE_FILE = None
     return None
 
@@ -124,29 +128,32 @@ def _opts(
     fmt: str | None = None,
     player_client: list | None = None,
     skip_cookies: bool = False,
+    ignore_no_formats: bool = False,
 ) -> dict:
     # skip_cookies=True → mobile client attempts (mobile clients don't use
     # browser session cookies — mixing them causes auth conflicts on YouTube).
     cookie = None if skip_cookies else _resolve_cookie_file()
 
     default_fmt = (
-        "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
+        "bestaudio/best"
         if audio_only
         else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=480]/best"
     )
     clients = player_client or ["tv_embedded", "ios", "android", "mweb", "web"]
     opts: dict = {
-        "format":         fmt or default_fmt,
-        "quiet":          True,
-        "no_warnings":    True,
-        "noplaylist":     True,
-        "geo_bypass":     True,
+        "format":                   fmt if fmt is not None else default_fmt,
+        "quiet":                    True,
+        "no_warnings":              True,
+        "noplaylist":               True,
+        "geo_bypass":               True,
+        "check_formats":            False,   # don't pre-verify URL reachability
+        "allow_unplayable_formats": False,
         "extractor_args": {
             "youtube": {
                 "player_client": clients,
             }
         },
-        "http_headers":   {
+        "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -155,6 +162,9 @@ def _opts(
             "Referer": "https://www.youtube.com/",
         },
     }
+    if ignore_no_formats:
+        opts["ignore_no_formats_error"] = True
+        opts["allow_unplayable_formats"] = True
     if cookie:
         opts["cookiefile"] = cookie
     return opts
@@ -235,39 +245,33 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
     any codec the client returns (more permissive than [ext=m4a]).
     """
     cookie = _resolve_cookie_file()
-    if not cookie:
-        log.warning(
-            "No YouTube cookies found! Cloud IPs require cookies. "
-            "Set YOUTUBE_COOKIES env var on Heroku (Netscape format). "
-            "See: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
-        )
+    log.info(f"🍪 Cookie status: {'loaded ✅' if cookie else 'NOT SET ❌ (set YOUTUBE_COOKIES env var!)'}")
 
+    # fmt=None means "let yt-dlp decide — no restriction"
     if audio_only:
-        # tv_embedded FIRST — bypasses YouTube bot detection on cloud/Heroku IPs
-        # without cookies or PO tokens (embedded player uses a different auth path).
-        combos: list[tuple[str, list]] = [
-            ("ba/b",           ["tv_embedded"]),
-            ("bestaudio/best", ["tv_embedded"]),
-            ("ba/b",                                             ["web"]),
-            ("bestaudio/best",                                   ["web"]),
-            ("ba/b",                                             ["ios"]),
-            ("ba/b",                                             ["android"]),
-            ("ba/b",                                             ["mweb"]),
-            ("bestaudio/best",                                   ["ios", "android"]),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["ios", "android", "mweb"]),
-            ("ba/b",  ["tv_embedded", "ios", "android", "mweb", "web"]),
-            ("best",  ["tv_embedded", "ios", "android", "mweb", "web"]),
+        combos: list[tuple[str | None, list, bool]] = [
+            # (format_selector, player_clients, ignore_no_formats)
+            ("bestaudio/best",                                    ["tv_embedded"],                      False),
+            ("bestaudio/best",                                    ["ios"],                               False),
+            ("bestaudio/best",                                    ["android"],                           False),
+            ("bestaudio/best",                                    ["mweb"],                              False),
+            ("bestaudio/best",                                    ["web"],                               False),
+            ("bestaudio/best",                                    ["tv_embedded", "ios", "android"],     False),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",  ["ios", "android", "mweb"],           False),
+            # Last resort — ignore format errors, take whatever URL YouTube gives
+            (None,                                                ["tv_embedded"],                       True),
+            (None,                                                ["ios"],                               True),
+            (None,                                                ["android"],                           True),
+            (None,                                                ["tv_embedded", "ios", "android", "mweb", "web"], True),
         ]
     else:
-        # Video: prefer progressive (combined audio+video, one URL) over DASH splits.
-        # DASH splits give two separate URLs which pytgcalls 2.x cannot handle natively.
         combos = [
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"]),
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["web"]),
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android", "mweb"]),
-            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"]),
-            ("best[height<=720]/best", ["tv_embedded", "ios", "android", "mweb", "web"]),
-            ("best",                   ["tv_embedded", "ios", "android", "mweb", "web"]),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android"],                   False),
+            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"],           False),
+            ("best[height<=720]/best",                                               ["tv_embedded", "ios", "android"],     False),
+            (None,                                                                   ["tv_embedded"],                        True),
+            (None,                                                                   ["tv_embedded", "ios", "android", "mweb", "web"], True),
         ]
 
     _RETRYABLE = (
@@ -278,34 +282,55 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
         "This video is not available",
         "HTTP Error 403",
         "HTTP Error 429",
+        "requires payment",
+        "members-only",
     )
 
-    for fmt, clients in combos:
+    for fmt, clients, ignore_no_fmt in combos:
         try:
-            opts = _opts(audio_only, fmt=fmt, player_client=clients, skip_cookies=False)
+            opts = _opts(
+                audio_only,
+                fmt=fmt,
+                player_client=clients,
+                skip_cookies=False,
+                ignore_no_formats=ignore_no_fmt,
+            )
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
-                    log.debug(f"yt-dlp fmt={fmt!r} clients={clients} OK: {url[:55]}")
-                    return info
+                    # Verify we actually got a usable URL
+                    url_ok = bool(
+                        info.get("url")
+                        or info.get("manifest_url")
+                        or any(f.get("url") for f in (info.get("formats") or []))
+                    )
+                    if url_ok:
+                        log.info(f"✅ yt-dlp OK | fmt={fmt!r} clients={clients} | {url[:55]}")
+                        return info
+                    log.warning(f"yt-dlp returned info but no URL | fmt={fmt!r} clients={clients}")
         except yt_dlp.utils.DownloadError as e:
             err = str(e)
             if any(r in err for r in _RETRYABLE):
-                log.warning(f"Format {fmt!r} clients={clients} not available, retrying with next…")
+                log.warning(f"Retrying: fmt={fmt!r} clients={clients} — {err[:80]}")
                 continue
-            log.error(f"yt-dlp download error: {e}")
+            log.error(f"yt-dlp fatal error: {e}")
             return None
         except RuntimeError:
             raise
         except Exception as e:
-            log.error(f"yt-dlp error: {e}")
+            log.error(f"yt-dlp unexpected error: {e}")
             return None
 
-    log.error(f"All formats exhausted for {url[:60]}")
+    log.error(f"❌ All formats exhausted for {url[:60]}")
     if not cookie:
         log.error(
-            "FIX: Export cookies from your browser (Chrome/Firefox) as Netscape format "
-            "and set them as YOUTUBE_COOKIES env var on Heroku."
+            "➡️  FIX: Export YouTube cookies from Chrome/Firefox (Netscape format) "
+            "and set as YOUTUBE_COOKIES env var in Heroku dashboard → Settings → Config Vars."
+        )
+    else:
+        log.error(
+            "➡️  Cookies are set but YouTube is still blocking this IP. "
+            "Try refreshing cookies (re-export from browser while logged into YouTube)."
         )
     return None
 
@@ -314,18 +339,17 @@ def _search_sync(query: str, audio_only: bool = True) -> dict | None:
     if query.startswith("http://") or query.startswith("https://"):
         return _extract_sync(query, audio_only)
     try:
-        # extract_flat=True — search ke time sirf metadata fetch karo.
-        # tv_embedded client use karo — cloud IPs par bot detection bypass karta hai.
+        # extract_flat=True — only fetch metadata for search, not full extraction.
+        # Use multiple clients for better success on cloud IPs.
         search_opts = {
             **_opts(audio_only, player_client=["tv_embedded", "ios", "android"]),
-            "extract_flat": True,
+            "extract_flat": "in_playlist",
+            "check_formats": False,
         }
         with yt_dlp.YoutubeDL(search_opts) as ydl:
             info = ydl.extract_info(f"ytsearch1:{query}", download=False)
             if info and "entries" in info and info["entries"]:
                 entry = info["entries"][0]
-                # Flat entry ka url = YouTube watch page URL — yahi chahiye.
-                # webpage_url set karo agar sirf url mile.
                 if entry.get("url") and not entry.get("webpage_url"):
                     entry["webpage_url"] = entry["url"]
                 return entry
