@@ -7,7 +7,7 @@ import re
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from helpers.decorators import admin_only
-from database import save_note, get_note, delete_note, list_notes
+from database import save_note, get_note, del_note, get_all_notes
 
 
 @Client.on_message(filters.group & filters.text, group=3)
@@ -46,13 +46,13 @@ async def delnote_cmd(client: Client, message: Message):
     if not args:
         return await message.reply("❌ Note name dein. Example: `/delnote rules`")
     name = args[0].lower()
-    await delete_note(message.chat.id, name)
+    await del_note(message.chat.id, name)
     await message.reply(f"✅ **Note deleted:** `#{name}`")
 
 
 @Client.on_message(filters.command(["notes", "listnotes"]) & filters.group)
 async def notes_cmd(client: Client, message: Message):
-    notes = await list_notes(message.chat.id)
+    notes = await get_all_notes(message.chat.id)
     if not notes:
         await message.reply("📝 **Koi notes nahi hain.**\n\n`/savenote <name> <content>` se banao.")
         return
