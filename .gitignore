@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual envs
+venv/
+env/
+.env
+.venv/
+
+# Bot session files — NEVER commit!
+*.session
+*.session-journal
+ApexBot.session
+ApexAssistant.session
+MusicBot.session
+Assistant.session
+
+# ⚠️  COOKIES — NEVER commit!
+# cookies/ folder ke andar .txt files GitHub par nahi jayengi
+# Sirf cookies/README.txt aur cookies/.gitkeep safe hain
+cookies/*.txt
+cookies/*.cookie
+yt_cookies_*.txt
+
+# Database (local only)
+*.db
+apex_bot.db
+
+# Temp files
+/tmp/
+*.tmp
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Logs
+*.log
+
+# Heroku
+.heroku/

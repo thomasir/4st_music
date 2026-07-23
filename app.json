@@ -1,0 +1,64 @@
+{
+  "name": "Apex All-in-One Bot",
+  "description": "Music + Admin + Economy + AntiPorn + ChatBot — All in one Telegram bot",
+  "keywords": ["telegram", "bot", "music", "python"],
+  "website": "https://t.me/ApexAssociation",
+  "stack": "heroku-26",
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "Standard-2X"
+    }
+  },
+  "env": {
+    "API_ID": {
+      "description": "Telegram App ID — visit https://my.telegram.org then API Development Tools, copy the App api_id number",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram App Hash — visit https://my.telegram.org then API Development Tools, copy the App api_hash string",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Bot Token — message @BotFather on Telegram, send /newbot and follow steps, copy the token",
+      "required": true
+    },
+    "SESSION_STRING": {
+      "description": "Pyrogram session string for the assistant (second) account. Generate it by running SESSION_STRING_HELPER.py from this repo in any Python environment. Do NOT use your main account.",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram numeric user ID — message @userinfobot on Telegram to get it",
+      "value": "8098146730"
+    },
+    "OWNER_USERNAME": {
+      "description": "Your Telegram username WITHOUT the @ symbol",
+      "value": "TheY_CaIl_mE_OG"
+    },
+    "LOG_CHANNEL": {
+      "description": "Log channel ID (e.g. -1001234567890). Create a Telegram channel, add the bot as admin, get the ID via @userinfobot",
+      "value": "-1004334848663"
+    },
+    "MUST_JOIN": {
+      "description": "Channel username WITHOUT @ that users must join to use the bot (e.g. ApexAssociation). Leave empty to disable this check.",
+      "value": ""
+    },
+    "SUPPORT_CHAT": {
+      "description": "Support group invite link shown in /start message",
+      "value": "https://t.me/ApexAssociation"
+    },
+    "YOUTUBE_COOKIES": {
+      "description": "YouTube cookies in Netscape format — optional, helps avoid age-restriction and bot-check errors. See cookies/README.txt in the repo.",
+      "required": false
+    },
+    "VOLUME_BOOST": {
+      "description": "Audio volume multiplier from 1.0 to 10.0. Value 10.0 means maximum boost.",
+      "value": "10.0"
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
