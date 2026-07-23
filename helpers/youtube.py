@@ -110,6 +110,14 @@ def _opts(audio_only: bool = True, fmt: str | None = None) -> dict:
         "no_warnings": True,
         "noplaylist":  True,
         "cookiefile":  cookie,
+        # FIX: Heroku/datacenter IPs pe YouTube 'web' player client block karta hai.
+        # 'ios' client nsig challenge use nahi karta → format restriction bypass hoti hai.
+        # 'web_creator' fallback rakha hai agar ios bhi na chale.
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["ios", "web_creator", "web"],
+            }
+        },
     }
     return opts
 
