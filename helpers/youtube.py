@@ -146,10 +146,23 @@ def _search_sync(query: str, audio_only: bool = True) -> dict | None:
     if query.startswith("http://") or query.startswith("https://"):
         return _extract_sync(query, audio_only)
     try:
-        with yt_dlp.YoutubeDL(_opts(audio_only)) as ydl:
+        # BUG FIX: extract_flat=True — search ke time sirf metadata fetch karo.
+        # Stream URL baad mein get_stream() fetch karega.
+        # Bina flat ke yt-dlp full stream extraction karta hai jo YouTube
+        # bots ke liye block kar deta hai (403/429) → None return hota tha.
+        search_opts = {
+            **_opts(audio_only),
+            "extract_flat": True,
+        }
+        with yt_dlp.YoutubeDL(search_opts) as ydl:
             info = ydl.extract_info(f"ytsearch1:{query}", download=False)
             if info and "entries" in info and info["entries"]:
-                return info["entries"][0]
+                entry = info["entries"][0]
+                # Flat entry ka url = YouTube watch page URL — yahi chahiye.
+                # webpage_url set karo agar sirf url mile.
+                if entry.get("url") and not entry.get("webpage_url"):
+                    entry["webpage_url"] = entry["url"]
+                return entry
             return info or None
     except yt_dlp.utils.DownloadError as e:
         log.error(f"yt-dlp search error: {e}")
@@ -174,23 +187,33 @@ async def search_song(query: str, is_video: bool = False) -> dict | None:
     if not info:
         return None
 
-    # BUG FIX: http_headers result mein include karo.
-    # YouTube DASH CDN URLs ko User-Agent + origin headers chahiye (bina headers = 403).
     http_headers = info.get("http_headers") or {}
+
+    # webpage_url: prefer explicit field, fallback to building from video ID
+    vid_id = info.get("id", "")
+    webpage_url = (
+        info.get("webpage_url")
+        or info.get("original_url")
+        or (f"https://www.youtube.com/watch?v={vid_id}" if vid_id else "")
+    )
+
+    # stream url: only use if it looks like a real CDN URL (not a YouTube watch page)
+    raw_url = _pick_url(info, not is_video)
+    is_cdn_url = raw_url and "youtube.com/watch" not in raw_url and "youtu.be/" not in raw_url
 
     result = {
         "title":        info.get("title", query)[:100],
-        "url":          _pick_url(info, not is_video),
+        "url":          raw_url if is_cdn_url else "",
         "duration":     info.get("duration", 0) or 0,
         "thumbnail":    info.get("thumbnail") or "",
-        "webpage_url":  info.get("webpage_url") or info.get("original_url", ""),
+        "webpage_url":  webpage_url,
         "uploader":     info.get("uploader") or info.get("channel") or "",
         "view_count":   info.get("view_count") or 0,
         "http_headers": http_headers,
     }
 
-    # Pre-cache stream URL WITH headers
-    if result["webpage_url"] and result["url"]:
+    # Cache stream URL only if it's a real CDN URL (not YouTube watch page)
+    if result["webpage_url"] and is_cdn_url:
         _cache_stream(result["webpage_url"], result["url"], result["duration"], http_headers)
     _cache_search(query, result)
     return result

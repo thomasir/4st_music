@@ -367,7 +367,7 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
         await _safe_edit(status_msg, f"❌ **Search error:**\n`{e}`")
         return
 
-    if not song_info or not song_info.get("url"):
+    if not song_info or (not song_info.get("url") and not song_info.get("webpage_url")):
         await _safe_edit(
             status_msg,
             f"❌ **Nahi mila:** `{query[:50]}`\n\n"
@@ -453,7 +453,7 @@ async def playforce_cmd(client: Client, message: Message):
         await _safe_edit(status_msg, f"❌ **Search error:**\n`{e}`")
         return
 
-    if not song_info or not song_info.get("url"):
+    if not song_info or (not song_info.get("url") and not song_info.get("webpage_url")):
         await _safe_edit(status_msg, f"❌ **Nahi mila:** `{query[:50]}`")
         return
 
