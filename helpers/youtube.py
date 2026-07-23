@@ -342,28 +342,67 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
 def _search_sync(query: str, audio_only: bool = True) -> dict | None:
     if query.startswith("http://") or query.startswith("https://"):
         return _extract_sync(query, audio_only)
+
+    # ── Fast path: extract_flat search (just metadata, no stream URL) ──────
+    # FIX: noplaylist=False is REQUIRED here.
+    # _opts() sets noplaylist=True (correct for direct video URLs), but
+    # ytsearch1: returns a "SearchResultsPlaylist" internally. With
+    # noplaylist=True, yt-dlp 2025.x refuses to process it and returns
+    # nothing — causing silent "Nahi mila" errors with no log entry.
     try:
-        # extract_flat=True — only fetch metadata for search, not full extraction.
-        # Use multiple clients for better success on cloud IPs.
         search_opts = {
             **_opts(audio_only, player_client=["tv_embedded", "ios", "android"]),
             "extract_flat": "in_playlist",
             "check_formats": False,
+            "noplaylist":    False,   # CRITICAL FIX: allow ytsearch playlist processing
         }
         with yt_dlp.YoutubeDL(search_opts) as ydl:
             info = ydl.extract_info(f"ytsearch1:{query}", download=False)
             if info and "entries" in info and info["entries"]:
                 entry = info["entries"][0]
+                # Ensure webpage_url is set so _do_play_inner can fetch stream later
                 if entry.get("url") and not entry.get("webpage_url"):
                     entry["webpage_url"] = entry["url"]
+                vid_id = entry.get("id", "")
+                if not entry.get("webpage_url") and vid_id:
+                    entry["webpage_url"] = f"https://www.youtube.com/watch?v={vid_id}"
+                log.info(f"✅ Search OK (flat): {entry.get('title', query)[:50]!r}")
                 return entry
-            return info or None
+            log.warning(f"⚠️  extract_flat returned no entries for: {query[:50]!r}")
     except yt_dlp.utils.DownloadError as e:
-        log.error(f"yt-dlp search error: {e}")
-        return None
+        log.error(f"yt-dlp flat-search error: {e}")
     except Exception as e:
-        log.error(f"yt-dlp search error: {e}")
-        return None
+        log.error(f"yt-dlp flat-search error: {e}")
+
+    # ── Fallback: full extraction search (slower but more reliable) ─────────
+    # Used when extract_flat returns nothing (e.g. regional blocks, sign-in walls).
+    log.info(f"🔄 Trying full-extraction fallback search for: {query[:50]!r}")
+    try:
+        fallback_opts = {
+            **_opts(audio_only, player_client=["ios", "tv_embedded", "android"]),
+            "noplaylist": False,   # same fix applies here
+        }
+        with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if info and "entries" in info and info["entries"]:
+                entry = info["entries"][0]
+                vid_id = entry.get("id", "")
+                if entry.get("url") and not entry.get("webpage_url"):
+                    entry["webpage_url"] = entry["url"]
+                if not entry.get("webpage_url") and vid_id:
+                    entry["webpage_url"] = f"https://www.youtube.com/watch?v={vid_id}"
+                log.info(f"✅ Search OK (fallback): {entry.get('title', query)[:50]!r}")
+                return entry
+            # Last resort: info itself might be the video entry
+            if info and info.get("id"):
+                return info
+    except yt_dlp.utils.DownloadError as e:
+        log.error(f"yt-dlp fallback-search error: {e}")
+    except Exception as e:
+        log.error(f"yt-dlp fallback-search error: {e}")
+
+    log.error(f"❌ All search methods failed for: {query[:60]!r}")
+    return None
 
 
 # ── Public async API ──────────────────────────────────────────────
