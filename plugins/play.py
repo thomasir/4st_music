@@ -523,7 +523,7 @@ async def np_cmd(client: Client, message: Message):
 
 # ── Stream ended → auto-next ──────────────────────────────────────
 
-@call_py.on_update(tgfilters.stream_ended)
+@call_py.on_update(tgfilters.StreamEnded)
 async def on_stream_end(client: PyTgCalls, update: StreamEnded):
     chat_id  = update.chat_id
     next_song = pop_queue(chat_id)
