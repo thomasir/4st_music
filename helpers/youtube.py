@@ -575,15 +575,22 @@ async def get_stream(
 
 # ── Invidious fallback ────────────────────────────────────────────
 # Public Invidious instances — used when yt-dlp fails on Heroku/cloud IPs.
-# Invidious acts as a proxy and returns direct CDN URLs without IP restrictions.
+# IMPORTANT: We do NOT use the direct CDN URLs from adaptiveFormats — those are
+# googlevideo.com links that are still blocked from Heroku.
+# Instead we use /latest_version?local=true which makes Invidious proxy the
+# stream through its own server, bypassing the IP block entirely.
 _INVIDIOUS_INSTANCES = [
+    "https://inv.nadeko.net",
     "https://invidious.privacydev.net",
     "https://iv.melmac.space",
     "https://invidious.nerdvpn.de",
     "https://inv.tux.pizza",
+    "https://invidious.lunar.icu",
+    "https://invidious.perennialte.ch",
     "https://invidious.io.lol",
     "https://invidious.fdn.fr",
     "https://yt.drgnz.club",
+    "https://invidious.einfachzocken.eu",
 ]
 
 
@@ -608,14 +615,20 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
     Try public Invidious instances as a last-resort fallback.
     Returns (stream_url, duration_secs) or None.
 
-    Invidious instances serve as YouTube proxies and bypass the Heroku/cloud
-    IP restrictions that block yt-dlp clients.
+    KEY: We use /latest_version?local=true — NOT the direct CDN URLs from
+    adaptiveFormats. The adaptiveFormats URLs are googlevideo.com CDN links
+    that are STILL blocked from Heroku IPs. With local=true, Invidious
+    fetches and re-serves the stream through its own server, so ntgcalls
+    pulls audio from Invidious (not blocked) instead of YouTube CDN (blocked).
     """
-    timeout = aiohttp.ClientTimeout(total=10, connect=5)
+    api_timeout  = aiohttp.ClientTimeout(total=15, connect=6)
+    head_timeout = aiohttp.ClientTimeout(total=8,  connect=4)
+
     for instance in _INVIDIOUS_INSTANCES:
         try:
+            # Step 1: get video metadata to find the best itag
             api_url = f"{instance}/api/v1/videos/{video_id}"
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with aiohttp.ClientSession(timeout=api_timeout) as session:
                 async with session.get(api_url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
                     if resp.status != 200:
                         log.debug(f"Invidious {instance} → HTTP {resp.status}")
@@ -623,26 +636,24 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                     data = await resp.json(content_type=None)
 
             duration = int(data.get("lengthSeconds", 0) or 0)
+            itag: int | None = None
 
             if audio_only:
-                # adaptiveFormats = separate audio/video streams
+                # adaptiveFormats has separate audio streams
                 adaptive = data.get("adaptiveFormats") or []
                 audio_fmts = [
                     f for f in adaptive
-                    if f.get("type", "").startswith("audio/")
-                    and f.get("url")
+                    if f.get("type", "").startswith("audio/") and f.get("itag")
                 ]
                 if audio_fmts:
                     best = max(audio_fmts, key=lambda f: int(f.get("bitrate", 0) or 0))
-                    su = best["url"]
-                    log.info(f"✅ Invidious audio OK | {instance} | {video_id}")
-                    return su, duration
+                    itag = best["itag"]
             else:
-                # formatStreams = muxed video+audio (progressive)
+                # formatStreams has muxed (video+audio) progressive formats
                 fmt_streams = data.get("formatStreams") or []
                 video_fmts = [
                     f for f in fmt_streams
-                    if f.get("type", "").startswith("video/") and f.get("url")
+                    if f.get("type", "").startswith("video/") and f.get("itag")
                 ]
                 if video_fmts:
                     def _res(f):
@@ -651,11 +662,35 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                         except ValueError:
                             return 0
                     best = max(video_fmts, key=_res)
-                    su = best["url"]
-                    log.info(f"✅ Invidious video OK | {instance} | {video_id}")
-                    return su, duration
+                    itag = best["itag"]
 
-            log.debug(f"Invidious {instance} — no usable format in response")
+            if not itag:
+                log.debug(f"Invidious {instance} — no itag found in response")
+                continue
+
+            # Step 2: build proxied stream URL.
+            # local=true → Invidious streams through its own server (bypasses Heroku IP block).
+            # local=false/omitted → Invidious redirects to googlevideo.com (still blocked).
+            su = f"{instance}/latest_version?id={video_id}&itag={itag}&local=true"
+
+            # Step 3: quick HEAD check — make sure this instance's proxy is alive
+            try:
+                async with aiohttp.ClientSession(timeout=head_timeout) as s:
+                    async with s.head(su, allow_redirects=True) as r:
+                        if r.status not in (200, 206):
+                            log.debug(
+                                f"Invidious proxy HEAD {r.status} — skipping {instance}"
+                            )
+                            continue
+            except Exception as e:
+                log.debug(f"Invidious proxy HEAD failed ({instance}): {e}")
+                continue
+
+            log.info(
+                f"✅ Invidious proxy OK | {instance} | {video_id} | itag={itag}"
+            )
+            return su, duration
+
         except Exception as e:
             log.debug(f"Invidious {instance} error: {e}")
             continue
