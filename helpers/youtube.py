@@ -174,6 +174,39 @@ def _opts(
     return opts
 
 
+# ── URL validation ────────────────────────────────────────────────
+def _is_streamable_url(url: str) -> bool:
+    """
+    Return True only if 'url' is a direct CDN media URL that ffmpeg/ntgcalls
+    can actually pipe.
+
+    fmt=None + ignore_no_formats sometimes returns:
+      - youtube.com/watch?v=... (HTML page → 0 bytes → ntgcalls EOF)
+      - youtu.be/... (redirect, not media)
+      - HLS .m3u8 manifests (ntgcalls shell_reader can't follow segments)
+      - DASH .mpd manifests (same problem)
+
+    All of the above cause "Reached end of the file" in shell_reader.cpp
+    and the bot leaving VC within 1 second of joining.
+    """
+    if not url:
+        return False
+    bad = (
+        "youtube.com/watch",
+        "youtu.be/",
+        "youtube.com/shorts",
+        "youtube.com/embed",
+        ".m3u8",
+        ".mpd",
+    )
+    if any(b in url for b in bad):
+        return False
+    # Real YouTube audio/video CDN URLs always contain googlevideo.com
+    # or the videoplayback path. Accept those; reject everything else.
+    good = ("googlevideo.com", "videoplayback")
+    return any(g in url for g in good)
+
+
 # ── Sync extractors ───────────────────────────────────────────────
 def _pick_urls(info: dict, audio_only: bool) -> tuple[str, str | None]:
     """Extract media and optional separate audio URLs from yt-dlp output."""
@@ -222,7 +255,9 @@ def _pick_urls(info: dict, audio_only: bool) -> tuple[str, str | None]:
             return best.get("url", ""), None
 
     # Direct extraction results do not always include a formats list.
-    url = info.get("url") or info.get("manifest_url") or ""
+    # NEVER return manifest_url here — ntgcalls shell_reader can't follow
+    # HLS/DASH segment manifests and immediately hits EOF ("Reached end of file").
+    url = info.get("url") or ""
     if url and (
         audio_only
         or (info.get("acodec", "none") != "none" and info.get("vcodec", "none") != "none")
@@ -302,12 +337,30 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
-                    # Verify we actually got a usable URL
-                    url_ok = bool(
-                        info.get("url")
-                        or info.get("manifest_url")
-                        or any(f.get("url") for f in (info.get("formats") or []))
-                    )
+                    # Collect all candidate URLs (never manifest_url — ntgcalls
+                    # shell_reader can't follow HLS/DASH segments and hits EOF).
+                    candidate_urls = [
+                        u for u in (
+                            [info.get("url")]
+                            + [f.get("url") for f in (info.get("formats") or [])]
+                        ) if u
+                    ]
+                    url_ok = bool(candidate_urls)
+
+                    if url_ok and ignore_no_fmt:
+                        # fmt=None last-resort combos sometimes return HTML
+                        # redirects (youtube.com/watch) or manifest URLs —
+                        # these cause ntgcalls "Reached end of the file" and
+                        # the bot leaving VC in 1 second.
+                        # Only accept if at least one URL is a real CDN URL.
+                        cdn_urls = [u for u in candidate_urls if _is_streamable_url(u)]
+                        if not cdn_urls:
+                            log.warning(
+                                f"fmt=None returned no CDN URL (got: {candidate_urls[0][:80]!r}) "
+                                f"— skipping clients={clients}"
+                            )
+                            continue   # try next combo
+
                     if url_ok:
                         log.info(f"✅ yt-dlp OK | fmt={fmt!r} clients={clients} | {url[:55]}")
                         return info
