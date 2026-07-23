@@ -533,7 +533,7 @@ async def _auto_next(chat_id: int, song: Song):
         log.warning(f"_auto_next {chat_id}: {e}")
 
 
-@call_py.on_update(tgfilters.stream_ended)
+@call_py.on_update(tgfilters.StreamEnded)
 async def on_stream_end(client: PyTgCalls, update: StreamEnded):
     """Never await Telegram calls here — schedule via create_task to prevent
     recursive MTProto update propagation (pytgcalls 2.x known issue)."""
