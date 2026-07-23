@@ -1,10 +1,6 @@
 """
-youtube.py — v5.1 ULTRA-FAST
-✅ search_song() — returns dict with title, url, duration, thumbnail, webpage_url
-✅ get_stream() — returns (stream_url, duration)
-✅ Link pass karo ya naam — dono kaam karega
-✅ 16-worker thread pool, aggressive caching, multi-client rotation
-✅ socket_timeout=3, concurrent=True for faster extraction
+youtube.py — cookies-only
+Sirf YOUTUBE_COOKIES env var ya cookies/youtube.txt file use karta hai.
 """
 
 import os
@@ -17,20 +13,51 @@ from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("ApexBot.youtube")
 
-_exec = ThreadPoolExecutor(max_workers=16)
+_exec = ThreadPoolExecutor(max_workers=8)
+
+# ── Cache ─────────────────────────────────────────────────────────
+_stream_cache: dict[str, tuple[str, int, float]] = {}
+_search_cache: dict[str, tuple[dict, float]]     = {}
+STREAM_TTL = 3600   # 1 hour
+SEARCH_TTL = 1800   # 30 min
+
+
+def _cached_stream(url: str) -> tuple[str, int] | None:
+    entry = _stream_cache.get(url)
+    if entry and time.monotonic() < entry[2]:
+        return entry[0], entry[1]
+    _stream_cache.pop(url, None)
+    return None
+
+
+def _cache_stream(url: str, stream_url: str, dur: int):
+    _stream_cache[url] = (stream_url, dur, time.monotonic() + STREAM_TTL)
+
+
+def _cached_search(q: str) -> dict | None:
+    entry = _search_cache.get(q)
+    if entry and time.monotonic() < entry[1]:
+        return entry[0]
+    _search_cache.pop(q, None)
+    return None
+
+
+def _cache_search(q: str, info: dict):
+    _search_cache[q] = (info, time.monotonic() + SEARCH_TTL)
+
 
 # ── Cookie setup ──────────────────────────────────────────────────
-_COOKIE_FILE: str | None = None
-
-def _setup_cookies() -> str | None:
-    local_path = os.path.join(
+def _get_cookie_file() -> str | None:
+    # 1. Local file (VPS/dev)
+    local = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "cookies", "youtube.txt"
     )
-    if os.path.isfile(local_path):
-        log.info(f"🍪 Cookies from LOCAL: {local_path}")
-        return local_path
+    if os.path.isfile(local):
+        log.info(f"🍪 Cookies: local file {local}")
+        return local
 
+    # 2. Heroku env var
     raw = os.environ.get("YOUTUBE_COOKIES", "").strip()
     if raw:
         try:
@@ -42,151 +69,66 @@ def _setup_cookies() -> str | None:
             tmp.write(raw)
             tmp.flush()
             tmp.close()
-            log.info(f"🍪 Cookies from ENV: {tmp.name}")
+            log.info(f"🍪 Cookies: env var → {tmp.name}")
             return tmp.name
         except Exception as e:
-            log.error(f"Cookie setup failed: {e}")
-    return None
+            log.error(f"Cookie file write failed: {e}")
 
-_COOKIE_FILE = _setup_cookies()
-
-# ── Client rotation ───────────────────────────────────────────────
-_AUTH_ERRORS = (
-    "please sign in", "sign in to confirm",
-    "no video formats found", "format is not available",
-    "http error 403", "age", "blocked",
-    "requested format is not available",
-)
-
-def _is_retriable(err: str) -> bool:
-    return any(k in err.lower() for k in _AUTH_ERRORS)
-
-# Client rotation — tv_embedded/android bypass bot checks best
-# web_creator removed (requires auth), added web_embedded as fallback
-_CLIENT_ROTATION = [
-    (["tv_embedded"],      True),
-    (["android"],          True),
-    (["ios"],              True),
-    (["android_vr"],       True),
-    (["web_embedded"],     True),
-    (["tv_embedded"],      False),
-    (["android"],          False),
-    (["mweb"],             False),
-]
-
-# ── Stream cache (10h TTL) + search cache (30min TTL) ────────────
-_stream_cache: dict[str, tuple[str, int, float]] = {}
-_search_cache: dict[str, tuple[dict, float]]     = {}
-STREAM_CACHE_TTL = 36000   # 10 hours
-SEARCH_CACHE_TTL = 1800    # 30 minutes
-
-
-def _cached_stream(url: str) -> tuple[str, int] | None:
-    if url in _stream_cache:
-        stream_url, duration, expires = _stream_cache[url]
-        if time.monotonic() < expires:
-            return stream_url, duration
-        del _stream_cache[url]
+    log.warning("⚠️  No cookies found — YouTube may block requests")
     return None
 
 
-def _cache_stream(url: str, stream_url: str, duration: int):
-    _stream_cache[url] = (stream_url, duration, time.monotonic() + STREAM_CACHE_TTL)
+_COOKIE_FILE: str | None = _get_cookie_file()
 
 
-def _cached_search(query: str) -> dict | None:
-    if query in _search_cache:
-        info, expires = _search_cache[query]
-        if time.monotonic() < expires:
-            return info
-        del _search_cache[query]
-    return None
-
-
-def _cache_search(query: str, info: dict):
-    _search_cache[query] = (info, time.monotonic() + SEARCH_CACHE_TTL)
-
-
-# ── yt-dlp extract (sync, runs in thread) ─────────────────────────
-
-def _ydl_opts(clients: list, use_cookies: bool, audio_only: bool = True) -> dict:
-    opts = {
-        "format": "bestaudio/best" if audio_only else "bestvideo+bestaudio/best[ext=mp4]/best",
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 8,
-        "noplaylist": True,
+# ── yt-dlp options ────────────────────────────────────────────────
+def _opts(audio_only: bool = True) -> dict:
+    o: dict = {
+        "format":                       "bestaudio/best" if audio_only else "bestvideo+bestaudio/best",
+        "quiet":                        True,
+        "no_warnings":                  True,
+        "noplaylist":                   True,
+        "socket_timeout":               15,
+        "retries":                      5,
+        "fragment_retries":             5,
+        "extractor_retries":            5,
         "concurrent_fragment_downloads": 4,
-        "retries": 3,
-        "fragment_retries": 3,
-        "extractor_retries": 3,
-        "extractor_args": {
-            "youtube": {
-                "player_client": clients,
-                "player_skip": ["webpage", "configs", "js"],
-            }
-        },
-        "http_headers": {
-            "User-Agent": "com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip",
-        },
     }
-    if use_cookies and _COOKIE_FILE:
-        opts["cookiefile"] = _COOKIE_FILE
-    return opts
+    if _COOKIE_FILE:
+        o["cookiefile"] = _COOKIE_FILE
+    else:
+        raise RuntimeError("YOUTUBE_COOKIES not set — cookies required")
+    return o
 
 
+# ── Sync extractors (run in thread pool) ─────────────────────────
 def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
-    """Try all client rotations, return info dict on success."""
-    for clients, use_cookies in _CLIENT_ROTATION:
-        try:
-            opts = _ydl_opts(clients, use_cookies, audio_only)
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if info:
-                    return info
-        except Exception as e:
-            err = str(e)
-            if _is_retriable(err):
-                continue
-            log.debug(f"yt-dlp [{clients}]: {err}")
-    return None
+    try:
+        with yt_dlp.YoutubeDL(_opts(audio_only)) as ydl:
+            info = ydl.extract_info(url, download=False)
+            return info or None
+    except Exception as e:
+        log.error(f"yt-dlp extract error: {e}")
+        return None
 
 
 def _search_sync(query: str, audio_only: bool = True) -> dict | None:
-    """Search YouTube for a query, return first result info."""
-    # If it's already a URL, extract directly
     if query.startswith("http://") or query.startswith("https://"):
         return _extract_sync(query, audio_only)
-
-    search_url = f"ytsearch1:{query}"
-    for clients, use_cookies in _CLIENT_ROTATION:
-        try:
-            opts = _ydl_opts(clients, use_cookies, audio_only)
-            opts["default_search"] = "ytsearch"
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(search_url, download=False)
-                if info and "entries" in info and info["entries"]:
-                    return info["entries"][0]
-                elif info and info.get("url"):
-                    return info
-        except Exception as e:
-            err = str(e)
-            if _is_retriable(err):
-                continue
-            log.debug(f"search [{clients}]: {err}")
-    return None
+    try:
+        with yt_dlp.YoutubeDL(_opts(audio_only)) as ydl:
+            info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+            if info and "entries" in info and info["entries"]:
+                return info["entries"][0]
+            return info or None
+    except Exception as e:
+        log.error(f"yt-dlp search error: {e}")
+        return None
 
 
 # ── Public async API ──────────────────────────────────────────────
-
 async def search_song(query: str, is_video: bool = False) -> dict | None:
-    """
-    Returns dict: {title, url, duration, thumbnail, webpage_url}
-    'url' is the direct stream URL, 'webpage_url' is the YouTube page URL.
-    Uses 30-min search cache for repeated queries.
-    """
-    cache_key = f"{'v' if is_video else 'a'}:{query}"
-    cached = _cached_search(cache_key)
+    cached = _cached_search(query)
     if cached:
         return cached
 
@@ -195,33 +137,32 @@ async def search_song(query: str, is_video: bool = False) -> dict | None:
     if not info:
         return None
 
-    # Get best stream URL
-    stream_url = info.get("url") or info.get("manifest_url") or ""
+    # Pull best stream URL
+    stream_url = (
+        info.get("url")
+        or info.get("manifest_url")
+        or ""
+    )
     if not stream_url and "formats" in info:
         fmts = info["formats"]
         if not is_video:
-            audio_fmts = [f for f in fmts if f.get("acodec") != "none" and f.get("vcodec") == "none"]
-            if audio_fmts:
-                stream_url = audio_fmts[-1].get("url", "")
-        if not stream_url:
+            af = [f for f in fmts if f.get("acodec") != "none" and f.get("vcodec") == "none"]
+            stream_url = (af[-1] if af else (fmts[-1] if fmts else {})).get("url", "")
+        else:
             stream_url = fmts[-1].get("url", "") if fmts else ""
 
     result = {
         "title":       info.get("title", query)[:100],
         "url":         stream_url,
         "duration":    info.get("duration", 0) or 0,
-        "thumbnail":   info.get("thumbnail", None),
-        "webpage_url": info.get("webpage_url", info.get("original_url", "")),
+        "thumbnail":   info.get("thumbnail"),
+        "webpage_url": info.get("webpage_url") or info.get("original_url", ""),
     }
-    _cache_search(cache_key, result)
+    _cache_search(query, result)
     return result
 
 
 async def get_stream(url: str, is_video: bool = False) -> tuple[str, int]:
-    """
-    Given a URL (webpage or stream), return (stream_url, duration).
-    Uses 10h cache to avoid re-fetching.
-    """
     cached = _cached_stream(url)
     if cached:
         return cached
@@ -235,23 +176,20 @@ async def get_stream(url: str, is_video: bool = False) -> tuple[str, int]:
     if not stream_url and "formats" in info:
         fmts = info["formats"]
         if not is_video:
-            audio_fmts = [f for f in fmts if f.get("acodec") != "none" and f.get("vcodec") == "none"]
-            if audio_fmts:
-                stream_url = audio_fmts[-1].get("url", "")
-        if not stream_url:
+            af = [f for f in fmts if f.get("acodec") != "none" and f.get("vcodec") == "none"]
+            stream_url = (af[-1] if af else (fmts[-1] if fmts else {})).get("url", "")
+        else:
             stream_url = fmts[-1].get("url", "") if fmts else ""
 
-    duration = info.get("duration", 0) or 0
+    dur = info.get("duration", 0) or 0
     if stream_url:
-        _cache_stream(url, stream_url, duration)
-    return stream_url, duration
+        _cache_stream(url, stream_url, dur)
+    return stream_url, dur
 
 
-def fmt_duration(seconds: int) -> str:
-    if not seconds or seconds <= 0:
+def fmt_duration(secs: int) -> str:
+    if not secs or secs <= 0:
         return "LIVE"
-    h, rem = divmod(int(seconds), 3600)
-    m, s   = divmod(rem, 60)
-    if h:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
+    h, r = divmod(int(secs), 3600)
+    m, s = divmod(r, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
