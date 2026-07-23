@@ -11,6 +11,21 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# ── FFmpeg PATH fix (Heroku / cloud) ─────────────────────────────────────────
+# On Heroku, `worker:` dynos don't always source .profile.d/ scripts, so the
+# vendor ffmpeg installed by bin/post_compile may not be in PATH when Python
+# starts. Setting it here at the Python level ensures pytgcalls always finds
+# ffprobe regardless of how the process was launched.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_FFMPEG_CANDIDATES = [
+    os.path.join(_HERE, "vendor", "ffmpeg", "bin"),   # post_compile static build
+    "/app/vendor/ffmpeg/bin",                           # explicit Heroku path
+]
+for _d in _FFMPEG_CANDIDATES:
+    if os.path.isdir(_d) and _d not in os.environ.get("PATH", ""):
+        os.environ["PATH"] = _d + ":" + os.environ.get("PATH", "")
+        break
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
