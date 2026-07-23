@@ -37,11 +37,8 @@ _VOL_EFFECTIVE = min(float(FFMPEG_VOLUME_BOOST), 10.0)
 
 
 def _ffmpeg_params() -> str:
-    return (
-        f"-threads 4 "
-        f"-af acompressor=threshold=-10dB:ratio=20:attack=1:release=10,"
-        f"volume={_VOL_EFFECTIVE:.1f}"
-    )
+    # Simple volume boost — acompressor filter breaks many stream types
+    return f"-af volume={_VOL_EFFECTIVE:.1f}"
 
 
 # ── Safe helpers ──────────────────────────────────────────────────
@@ -522,20 +519,31 @@ async def np_cmd(client: Client, message: Message):
 
 # ── Stream ended → auto-next ──────────────────────────────────────
 
-@call_py.on_update(tgfilters.StreamEnded)
+async def _auto_next(chat_id: int, song: Song):
+    """Runs outside pytgcalls handler. Awaiting Telegram calls inside
+    on_update handlers causes recursive _propagate/_handle_mtproto_updates
+    errors in pytgcalls 2.x — use create_task to break the chain."""
+    try:
+        status_msg = await bot.send_message(
+            chat_id,
+            f"⏭ **Auto-next...** 🎶 {song.title}"
+        )
+        await _do_play(chat_id, song, status_msg, song.is_video)
+    except Exception as e:
+        log.warning(f"_auto_next {chat_id}: {e}")
+
+
+@call_py.on_update(tgfilters.stream_ended)
 async def on_stream_end(client: PyTgCalls, update: StreamEnded):
-    chat_id  = update.chat_id
+    """Never await Telegram calls here — schedule via create_task to prevent
+    recursive MTProto update propagation (pytgcalls 2.x known issue)."""
+    chat_id = update.chat_id
     next_song = pop_queue(chat_id)
     if not next_song:
         clear_queue(chat_id)
         asyncio.create_task(_leave_call(chat_id))
         return
-
-    status_msg = await bot.send_message(
-        chat_id,
-        f"⏭ **Auto-next...**\n🎶 {next_song.title}"
-    )
-    asyncio.create_task(_do_play(chat_id, next_song, status_msg, next_song.is_video))
+    asyncio.create_task(_auto_next(chat_id, next_song))
 
 
 # ── Callback buttons ──────────────────────────────────────────────
