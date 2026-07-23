@@ -182,11 +182,20 @@ def _opts(
     if cookie:
         opts["cookiefile"] = cookie
     # YTDLP_PROXY: set in Heroku Config Vars to route yt-dlp through a proxy.
-    # Example: socks5://user:pass@host:port  or  http://host:port
-    # A proxy bypasses Heroku's IP ban entirely — most reliable long-term fix.
+    # Correct format: socks5://host:port  or  socks5://user:pass@host:port
+    #                 http://host:port    or  https://host:port
+    # Common mistake: writing "host:port socks5://" or "1080socks5://" etc.
     proxy = os.environ.get("YTDLP_PROXY", "").strip()
     if proxy:
-        opts["proxy"] = proxy
+        _valid_schemes = ("socks5://", "socks4://", "http://", "https://")
+        if any(proxy.startswith(s) for s in _valid_schemes):
+            opts["proxy"] = proxy
+        else:
+            log.error(
+                f"❌ YTDLP_PROXY format galat hai: {proxy!r}\n"
+                f"   Sahi format: socks5://host:port  ya  http://host:port\n"
+                f"   Heroku Config Vars mein theek karo."
+            )
     return opts
 
 
