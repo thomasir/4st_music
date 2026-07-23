@@ -181,6 +181,12 @@ def _opts(
         opts["allow_unplayable_formats"] = True
     if cookie:
         opts["cookiefile"] = cookie
+    # YTDLP_PROXY: set in Heroku Config Vars to route yt-dlp through a proxy.
+    # Example: socks5://user:pass@host:port  or  http://host:port
+    # A proxy bypasses Heroku's IP ban entirely — most reliable long-term fix.
+    proxy = os.environ.get("YTDLP_PROXY", "").strip()
+    if proxy:
+        opts["proxy"] = proxy
     return opts
 
 
@@ -673,17 +679,29 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
             # local=false/omitted → Invidious redirects to googlevideo.com (still blocked).
             su = f"{instance}/latest_version?id={video_id}&itag={itag}&local=true"
 
-            # Step 3: quick HEAD check — make sure this instance's proxy is alive
+            # Step 3: light GET range check (1 byte) to confirm this instance proxies OK.
+            # HEAD is not used — many Invidious instances reject HEAD on /latest_version.
             try:
                 async with aiohttp.ClientSession(timeout=head_timeout) as s:
-                    async with s.head(su, allow_redirects=True) as r:
+                    async with s.get(
+                        su,
+                        headers={"Range": "bytes=0-0"},
+                        allow_redirects=True,
+                    ) as r:
                         if r.status not in (200, 206):
                             log.debug(
-                                f"Invidious proxy HEAD {r.status} — skipping {instance}"
+                                f"Invidious proxy check {r.status} — skipping {instance}"
+                            )
+                            continue
+                        # Make sure it's not an HTML error page
+                        ct = r.headers.get("Content-Type", "")
+                        if "text/html" in ct:
+                            log.debug(
+                                f"Invidious proxy returned HTML — skipping {instance}"
                             )
                             continue
             except Exception as e:
-                log.debug(f"Invidious proxy HEAD failed ({instance}): {e}")
+                log.debug(f"Invidious proxy check failed ({instance}): {e}")
                 continue
 
             log.info(
