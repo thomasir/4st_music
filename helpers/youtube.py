@@ -129,17 +129,27 @@ def _opts(
     player_client: list | None = None,
     skip_cookies: bool = False,
     ignore_no_formats: bool = False,
+    skip_webpage: bool = False,
 ) -> dict:
     # skip_cookies=True → mobile client attempts (mobile clients don't use
     # browser session cookies — mixing them causes auth conflicts on YouTube).
     cookie = None if skip_cookies else _resolve_cookie_file()
 
     default_fmt = (
-        "bestaudio/best"
+        "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
         if audio_only
         else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=480]/best"
     )
-    clients = player_client or ["tv_embedded", "ios", "android", "mweb", "web"]
+    clients = player_client or ["tv_embedded", "ios", "android", "mweb"]
+    extractor_args: dict = {
+        "player_client": clients,
+    }
+    # skip_webpage=True: skip JS player extraction entirely.
+    # Cloud/Heroku IPs often fail JS player extraction → "Requested format is not available".
+    # tv_embedded + skip_webpage is the most reliable combo on restricted IPs.
+    if skip_webpage:
+        extractor_args["skip"] = ["webpage", "configs", "js"]
+
     opts: dict = {
         "format":                   fmt if fmt is not None else default_fmt,
         "quiet":                    True,
@@ -148,14 +158,11 @@ def _opts(
         "geo_bypass":               True,
         "check_formats":            False,   # don't pre-verify URL reachability
         "allow_unplayable_formats": False,
-        # BUG FIX: socket_timeout add kiya — bina iske yt-dlp cloud IPs pe
-        # indefinitely hang karta tha jab YouTube respond nahi karta tha.
+        # socket_timeout: bina iske yt-dlp cloud IPs pe indefinitely hang karta tha.
         # 20s per attempt reasonable hai; combos ka loop overall timeout control karta hai.
         "socket_timeout":           20,
         "extractor_args": {
-            "youtube": {
-                "player_client": clients,
-            }
+            "youtube": extractor_args,
         },
         "http_headers": {
             "User-Agent": (
@@ -289,34 +296,43 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
     # fmt=None means "let yt-dlp decide — no restriction"
     # NOTE: fmt=None + ignore_no_formats combos often return storyboard thumbnail
     # URLs (i.ytimg.com) on cloud/Heroku IPs. _is_streamable_url() rejects those.
-    # "sabr" = YouTube's Streaming ABR client — bypasses many IP-level restrictions.
+    #
+    # Combo tuple: (format_selector, player_clients, ignore_no_formats, skip_webpage)
+    # skip_webpage=True: skips JS player extraction entirely — most reliable on Heroku/cloud IPs.
+    # tv_embedded + skip_webpage is the #1 fix for "Requested format is not available" on cloud IPs.
     if audio_only:
-        combos: list[tuple[str | None, list, bool]] = [
-            # (format_selector, player_clients, ignore_no_formats)
-            ("bestaudio/best",                                    ["ios"],                                        False),
-            ("bestaudio/best",                                    ["android"],                                    False),
-            ("bestaudio/best",                                    ["tv_embedded"],                                False),
-            ("bestaudio/best",                                    ["mweb"],                                       False),
-            ("bestaudio/best",                                    ["web"],                                        False),
-            ("bestaudio/best",                                    ["tv_embedded", "ios", "android"],              False),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio",  ["ios", "android", "mweb"],                   False),
-            # sabr client — bypasses most Heroku/cloud IP restrictions
-            ("bestaudio/best",                                    ["sabr"],                                       False),
-            ("bestaudio/best",                                    ["sabr", "ios"],                                False),
+        combos: list[tuple[str | None, list, bool, bool]] = [
+            # Best combos for cloud/Heroku IPs — tv_embedded bypasses most restrictions
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["tv_embedded"],                    False, True),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["tv_embedded"],                    False, False),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["ios"],                             False, True),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["ios"],                             False, False),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["android"],                        False, True),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["android"],                        False, False),
+            # sabr client — YouTube's Streaming ABR, designed to bypass IP-level restrictions
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["sabr"],                           False, False),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["sabr", "tv_embedded"],            False, False),
+            # Broader client combos
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["tv_embedded", "ios", "android"],  False, True),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["mweb"],                           False, False),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best", ["web"],                            False, False),
             # Last resort — only accept if _is_streamable_url validates the CDN URL
-            (None,                                                ["ios"],                                        True),
-            (None,                                                ["android"],                                    True),
-            (None,                                                ["tv_embedded", "ios", "android", "mweb"],     True),
+            (None,                                                     ["tv_embedded"],                    True,  True),
+            (None,                                                     ["ios"],                            True,  True),
+            (None,                                                     ["android"],                        True,  False),
+            (None,                                                     ["tv_embedded", "ios", "android", "mweb"], True, False),
         ]
     else:
         combos = [
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android"],                   False),
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False),
-            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"],           False),
-            ("best[height<=720]/best",                                               ["tv_embedded", "ios", "android"],     False),
-            ("best[height<=720]/best",                                               ["sabr"],                              False),
-            (None,                                                                   ["ios", "android"],                    True),
-            (None,                                                                   ["tv_embedded", "ios", "android"],     True),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False, True),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"],                      False, False),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android"],                   False, True),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android"],                   False, False),
+            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"],           False, False),
+            ("best[height<=720]/best",                                               ["tv_embedded", "ios", "android"],    False, True),
+            ("best[height<=720]/best",                                               ["sabr"],                             False, False),
+            (None,                                                                   ["tv_embedded", "ios"],               True,  True),
+            (None,                                                                   ["tv_embedded", "ios", "android"],    True,  False),
         ]
 
     _RETRYABLE = (
@@ -331,7 +347,7 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
         "members-only",
     )
 
-    for fmt, clients, ignore_no_fmt in combos:
+    for fmt, clients, ignore_no_fmt, skip_wp in combos:
         try:
             opts = _opts(
                 audio_only,
@@ -339,6 +355,7 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
                 player_client=clients,
                 skip_cookies=False,
                 ignore_no_formats=ignore_no_fmt,
+                skip_webpage=skip_wp,
             )
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
