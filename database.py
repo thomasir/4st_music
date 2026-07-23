@@ -45,8 +45,8 @@ async def init_db():
         );
         CREATE TABLE IF NOT EXISTS welcome_settings (
             chat_id          INTEGER PRIMARY KEY,
-            welcome_text     TEXT DEFAULT '👋 Welcome {mention} to {chat}! 🎉',
-            goodbye_text     TEXT DEFAULT '👋 {mention} ne {chat} chhod diya.',
+            welcome_text     TEXT DEFAULT '🎉 **Welcome, {mention}!**\n━━━━━━━━━━━━━━━━━━━━━━\n\n👋 Aapka **{chat}** mein swagat hai!\n\n> 🎵 Music ke liye `/play` try karo\n> ❓ Help ke liye `/help` likho\n\n_Maza karo aur rules follow karo!_ ✨',
+            goodbye_text     TEXT DEFAULT '👋 **{mention}** ne **{chat}** chhod diya.\n\n_Jab chaaho wapas aa sakte ho!_ 💫',
             welcome_enabled  INTEGER DEFAULT 1,
             goodbye_enabled  INTEGER DEFAULT 1
         );
@@ -270,8 +270,8 @@ async def get_welcome(chat_id: int) -> dict:
                     "goodbye_enabled": bool(row[3]),
                 }
             return {
-                "welcome_text":    "👋 Welcome {mention} to **{chat}**! 🎉\n\nHope you enjoy your stay here! 💫",
-                "goodbye_text":    "👋 {mention} ne {chat} chhod diya.",
+                "welcome_text":    "🎉 **Welcome, {mention}!**\n━━━━━━━━━━━━━━━━━━━━━━\n\n👋 Aapka **{chat}** mein swagat hai!\n\n> 🎵 Music ke liye `/play` try karo\n> ❓ Help ke liye `/help` likho\n\n_Maza karo aur rules follow karo!_ ✨",
+                "goodbye_text":    "👋 **{mention}** ne **{chat}** chhod diya.\n\n_Jab chaaho wapas aa sakte ho!_ 💫",
                 "welcome_enabled": True,
                 "goodbye_enabled": True,
             }

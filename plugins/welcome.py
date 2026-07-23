@@ -28,7 +28,10 @@ async def _format(text: str, user, chat) -> str:
 
 def _welcome_buttons(chat_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("👋 Say Hi!", callback_data=f"wc_hi_{chat_id}")]
+        [
+            InlineKeyboardButton("👋 Say Hi!", callback_data=f"wc_hi_{chat_id}"),
+            InlineKeyboardButton("🎵 Play Music", switch_inline_query_current_chat="/play "),
+        ]
     ])
 
 

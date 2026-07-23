@@ -124,7 +124,7 @@ def now_playing_buttons(url: str = "", paused: bool = False, queue_count: int = 
         if paused else
         InlineKeyboardButton("⏸️ Pause", callback_data="pause")
     )
-    queue_label = f"📋 Queue ({queue_count})" if queue_count > 0 else "📋 Queue"
+    queue_label = f"📋 Queue ({queue_count})" if queue_count > 0 else "📋 Empty"
     rows = [
         [
             toggle,
@@ -132,9 +132,9 @@ def now_playing_buttons(url: str = "", paused: bool = False, queue_count: int = 
             InlineKeyboardButton("⏹️ Stop", callback_data="stop"),
         ],
         [
-            InlineKeyboardButton("🔉 Vol −", callback_data="vol_down"),
+            InlineKeyboardButton("🔉 Vol−", callback_data="vol_down"),
             InlineKeyboardButton(queue_label, callback_data="queue_cb"),
-            InlineKeyboardButton("🔊 Vol +", callback_data="vol_up"),
+            InlineKeyboardButton("🔊 Vol+", callback_data="vol_up"),
         ],
         [
             InlineKeyboardButton("🔀 Shuffle", callback_data="shuffle_cb"),
@@ -143,25 +143,40 @@ def now_playing_buttons(url: str = "", paused: bool = False, queue_count: int = 
         ],
     ]
     if url and url.startswith("http"):
-        rows.append([InlineKeyboardButton("🎬 YouTube pe Dekho", url=url)])
+        rows.append([
+            InlineKeyboardButton("🎬 YouTube pe Dekho", url=url),
+        ])
     return InlineKeyboardMarkup(rows)
 
 
+def _vol_bar(vol: int, total: int = 10) -> str:
+    """Visual volume bar using block characters."""
+    filled = min(total, round(vol / 200 * total))
+    return "▰" * filled + "▱" * (total - filled)
+
+
 def np_card_text(song: Song, chat_id: int = 0) -> str:
-    """Professional now playing card — Telegram blockquote style."""
-    kind_emoji = "🎬" if song.is_video else "🎵"
-    vol  = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
-    loop = "🔁 ON" if _loop_enabled.get(chat_id) else "OFF"
-    q    = queue_size(chat_id)
-    q_text = f"{q} songs" if q > 0 else "khaali"
+    """Premium now-playing card."""
+    kind_emoji  = "🎬" if song.is_video else "🎵"
+    quality_tag = "📺 Full HD Video" if song.is_video else "🎙️ HQ Audio"
+    vol         = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
+    loop_on     = _loop_enabled.get(chat_id, False)
+    q           = queue_size(chat_id)
+    dur_text    = fmt_duration(song.duration) if song.duration else "🔴 Live"
+    title       = (song.title[:62] + "…") if len(song.title) > 62 else song.title
+    q_display   = f"**{q}** song{'s' if q != 1 else ''}" if q > 0 else "Empty"
+    vol_bar     = _vol_bar(vol)
+    loop_str    = "🔁 **ON**" if loop_on else "○ OFF"
+
     return (
-        f"**{kind_emoji} NOW PLAYING** 🔥\n\n"
-        f"> 🎶 **{song.title}**\n"
-        f"> ⏱️ `{fmt_duration(song.duration)}`\n"
-        f"> 🔊 Volume: `{vol}%`\n"
-        f"> 👤 {song.requested_by or 'Unknown'}\n"
-        f"> 📋 Queue: `{q_text}`\n"
-        f"> 🔁 Loop: `{loop}`"
+        f"**{kind_emoji} NOW PLAYING** ✨\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🎶 **{title}**\n"
+        f"⏱️ `{dur_text}` · {quality_tag}\n\n"
+        f"> 👤 Requested by {song.requested_by or 'Unknown'}\n"
+        f"> 🔊 `{vol_bar}` **{vol}%**\n"
+        f"> 📋 Queue: {q_display}\n"
+        f"> 🔁 Loop: {loop_str}"
     )
 
 
@@ -203,9 +218,10 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
         # ── Step 2 animation: Found! Loading... ──────────────────
         await _safe_edit(
             status_msg,
-            f"🎯 **Mil gaya!** Loading stream...\n\n"
+            f"🎯 **Mil gaya!** Stream load ho raha hai...\n\n"
             f"🎶 **{song.title[:60]}**\n"
-            f"⏱️ `{fmt_duration(song.duration)}`"
+            f"⏱️ `{fmt_duration(song.duration)}`\n\n"
+            f"🔗 _Connecting to Voice Chat..._"
         )
 
         # BUG FIX: hamesha webpage_url se fresh stream fetch karo.
@@ -339,12 +355,17 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
     if not query:
         reply = await client.send_message(
             message.chat.id,
-            "🎵 **Song ka naam ya link dein!**\n\n"
-            "**Examples:**\n"
-            "`/play Arijit Singh tum hi ho`\n"
-            "`/play https://youtube.com/watch?v=...`\n"
-            "`/vplay <song>` — 1080p video ke liye\n\n"
-            "💡 YouTube, Spotify links bhi kaam karte hain!",
+            "🎵 **Song ka naam ya YouTube link dein!**\n\n"
+            "**▶️ Examples:**\n"
+            "• `/play Arijit Singh tum hi ho`\n"
+            "• `/play https://youtube.com/watch?v=...`\n"
+            "• `/vplay <song>` — 1080p HD Video\n"
+            "• `/playforce <song>` — ⚡ Queue skip\n\n"
+            "> 💡 Song name, YouTube URL — dono kaam karte hain!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📋 Queue", callback_data="queue_cb"),
+                InlineKeyboardButton("🎵 Now Playing", callback_data="np_refresh"),
+            ]])
         )
         await asyncio.sleep(6)
         asyncio.create_task(_safe_delete(reply))
@@ -355,9 +376,9 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
     # ── Step 1 animation ─────────────────────────────────────────
     status_msg = await client.send_message(
         message.chat.id,
-        f"🔍 **{kind_text} dhundh raha hun...**\n\n"
-        f"🎶 `{query[:60]}`\n\n"
-        f"_Please wait..._"
+        f"🔍 **{kind_text} Search ho raha hai...**\n\n"
+        f"🎵 `{query[:60]}`\n\n"
+        f"⏳ _Thoda wait karo, dhundh raha hun!_"
     )
 
     try:
@@ -392,15 +413,19 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
 
     if current:
         pos = add_to_queue(chat_id, song)
+        title_short = (song.title[:55] + "…") if len(song.title) > 55 else song.title
         await _safe_edit(
             status_msg,
-            f"📋 **Queue mein add ho gaya — #{pos}**\n\n"
-            f"🎶 **{song.title}**\n"
+            f"📋 **Queue #{pos} mein add ho gaya!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"🎶 **{title_short}**\n"
             f"⏱️ `{fmt_duration(song.duration)}`\n"
             f"👤 {requested_by}\n\n"
-            f"⏳ _Apni baari ka wait karo!_",
+            f"> ⏳ Position: **#{pos}** in queue\n"
+            f"> 🎵 _Ab chal raha hai phir aayegi tumhari song!_",
             InlineKeyboardMarkup([[
                 InlineKeyboardButton("📋 Queue Dekho", callback_data="queue_cb"),
+                InlineKeyboardButton("⏭️ Skip Current", callback_data="skip"),
             ]])
         )
         return
@@ -477,15 +502,21 @@ async def pause_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     current = get_current(chat_id)
     if not current:
-        r = await client.send_message(chat_id, "❌ **Abhi kuch chal nahi raha!**")
-        await asyncio.sleep(3)
+        r = await client.send_message(chat_id, "❌ **Abhi kuch chal nahi raha!**\n\n`/play <song>` se start karo! 🎵")
+        await asyncio.sleep(4)
         asyncio.create_task(_safe_delete(r))
         return
     try:
         await call_py.pause(chat_id)
         r = await client.send_message(
             chat_id,
-            f"⏸️ **Paused!**\n\n🎶 _{current.title}_\n\n`/resume` se dobara chalao.",
+            f"⏸️ **Paused!**\n\n"
+            f"🎶 _{current.title[:55]}_\n\n"
+            f"`/resume` se dobara chalao ▶️",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("▶️ Resume", callback_data="resume"),
+                InlineKeyboardButton("⏭️ Skip", callback_data="skip"),
+            ]])
         )
         await asyncio.sleep(4)
         asyncio.create_task(_safe_delete(r))
@@ -501,8 +532,8 @@ async def resume_cmd(client: Client, message: Message):
     chat_id = message.chat.id
     current = get_current(chat_id)
     if not current:
-        r = await client.send_message(chat_id, "❌ **Queue khaali hai!**")
-        await asyncio.sleep(3)
+        r = await client.send_message(chat_id, "❌ **Queue khaali hai!**\n\n`/play <song>` se start karo! 🎵")
+        await asyncio.sleep(4)
         asyncio.create_task(_safe_delete(r))
         return
     try:
@@ -552,9 +583,13 @@ async def stop_cmd(client: Client, message: Message):
     _loop_enabled.pop(chat_id, None)
     r = await client.send_message(
         chat_id,
-        f"⏹️ **Stopped!**\n\n"
-        f"📋 Queue clear kar diya (`{q}` songs remove)\n"
-        f"🎵 `/play <song>` se dobara shuru karo!"
+        f"⏹️ **Music Band Kar Diya!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📋 **{q}** song{'s' if q != 1 else ''} queue se remove\n"
+        f"🎵 `/play <song>` se dobara shuru karo!",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("▶️ Play Again", switch_inline_query_current_chat="/play "),
+        ]])
     )
     await asyncio.sleep(5)
     asyncio.create_task(_safe_delete(r))
@@ -568,14 +603,17 @@ async def vol_cmd(client: Client, message: Message):
 
     if not args:
         cur = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
+        vbar = _vol_bar(cur)
         await client.send_message(
             chat_id,
-            f"🔊 **Current Volume: `{cur}%`**\n\n"
-            f"Range: `0–200`\n"
-            f"Example: `/vol 150` ya `/vol 200` (max!)",
+            f"🔊 **Volume Control**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"> Current: `{vbar}` **{cur}%**\n\n"
+            f"Range: `0 – 200` · `/vol 150`\n"
+            f"💥 `/vol 200` = Maximum Boost!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🔉 −20", callback_data="vol_down"),
-                InlineKeyboardButton("🔊 +20", callback_data="vol_up"),
+                InlineKeyboardButton("🔉 Vol−20", callback_data="vol_down"),
+                InlineKeyboardButton("🔊 Vol+20", callback_data="vol_up"),
             ]]),
         )
         return
@@ -590,10 +628,13 @@ async def vol_cmd(client: Client, message: Message):
 
     _volumes[chat_id] = vol
     asyncio.create_task(_set_volume_bg(chat_id))
+    vbar = _vol_bar(vol)
+    emoji = "🔇" if vol == 0 else "🔉" if vol < 80 else "🔊" if vol < 160 else "📢"
+    label = " 🔇 Muted!" if vol == 0 else " 🔥 Max Boost!" if vol >= 200 else ""
     r = await client.send_message(
         chat_id,
-        f"🔊 **Volume set: `{vol}%`**"
-        + (" 🔥 MAX!" if vol >= 200 else "")
+        f"{emoji} **Volume: `{vol}%`**{label}\n"
+        f"`{vbar}`"
     )
     await asyncio.sleep(3)
     asyncio.create_task(_safe_delete(r))
@@ -609,36 +650,48 @@ async def queue_cmd(client: Client, message: Message):
     if not current and not queue:
         r = await client.send_message(
             chat_id,
-            "📋 **Queue khaali hai!**\n\n`/play <song>` se start karo. 🎵",
+            "📋 **Queue Khaali Hai!**\n\n"
+            "> 🎵 Abhi koi song queue mein nahi hai\n\n"
+            "`/play <song>` likho aur music start karo! 🔥",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("▶️ Play Something", switch_inline_query_current_chat="/play "),
+            ]])
         )
-        await asyncio.sleep(5)
+        await asyncio.sleep(6)
         asyncio.create_task(_safe_delete(r))
         return
 
-    lines = ["**📋 Music Queue**\n"]
+    lines = ["**📋 Music Queue**\n━━━━━━━━━━━━━━━━━━━━━━\n"]
     if current:
         kind = "🎬" if current.is_video else "🎵"
         lines.append(
-            f"**▶️ Ab chal raha hai:**\n"
-            f"{kind} **{current.title}** `[{fmt_duration(current.duration)}]`\n"
-            f"👤 _{current.requested_by}_"
+            f"**▶️ Ab Chal Raha Hai:**\n"
+            f"{kind} **{current.title[:50]}** `[{fmt_duration(current.duration)}]`\n"
+            f"👤 _{current.requested_by}_\n"
         )
     if queue:
-        lines.append(f"\n**⏳ Waiting ({len(queue)} songs):**")
-        for i, s in enumerate(queue[:12], 1):
+        lines.append(f"**⏳ Queue ({len(queue)} song{'s' if len(queue)!=1 else ''}):**")
+        for i, s in enumerate(queue[:15], 1):
             kind = "🎬" if s.is_video else "🎵"
-            lines.append(f"`{i:>2}.` {kind} {s.title[:40]} `[{fmt_duration(s.duration)}]`")
-        if len(queue) > 12:
-            lines.append(f"\n_...aur {len(queue)-12} songs hain_")
+            dur  = fmt_duration(s.duration)
+            title = s.title[:38] + ("…" if len(s.title) > 38 else "")
+            lines.append(f"`{i:>2}.` {kind} {title} `[{dur}]`")
+        if len(queue) > 15:
+            lines.append(f"\n_...aur **{len(queue)-15}** songs hain_")
 
     await client.send_message(
         chat_id,
         "\n".join(lines),
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏭️ Skip", callback_data="skip"),
-            InlineKeyboardButton("🔀 Shuffle", callback_data="shuffle_cb"),
-            InlineKeyboardButton("⏹️ Stop", callback_data="stop"),
-        ]])
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⏭️ Skip", callback_data="skip"),
+                InlineKeyboardButton("🔀 Shuffle", callback_data="shuffle_cb"),
+                InlineKeyboardButton("⏹️ Stop", callback_data="stop"),
+            ],
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="np_refresh"),
+            ]
+        ])
     )
 
 
@@ -650,9 +703,14 @@ async def np_cmd(client: Client, message: Message):
     if not current:
         r = await client.send_message(
             chat_id,
-            "❌ **Abhi kuch nahi chal raha.**\n\n`/play <song>` se shuru karo! 🎵"
+            "🎵 **Abhi Koi Song Nahi Chal Raha**\n\n"
+            "> Queue bilkul khaali hai!\n\n"
+            "`/play <song>` se music start karo! 🔥",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("▶️ Play Now", switch_inline_query_current_chat="/play "),
+            ]])
         )
-        await asyncio.sleep(5)
+        await asyncio.sleep(6)
         asyncio.create_task(_safe_delete(r))
         return
 
@@ -801,7 +859,13 @@ async def cb_controls(client, cq):
         asyncio.create_task(_leave_call(chat_id))
         await _safe_edit(
             cq.message,
-            f"⏹️ **Stopped!**\n\n📋 `{q}` songs queue se remove.\n`/play <song>` se dobara start karo! 🎵"
+            f"⏹️ **Music Band Kar Diya!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 **{q}** song{'s' if q != 1 else ''} queue se remove\n"
+            f"🎵 `/play <song>` se dobara shuru karo!",
+            InlineKeyboardMarkup([[
+                InlineKeyboardButton("▶️ Play Again", switch_inline_query_current_chat="/play "),
+            ]])
         )
 
 

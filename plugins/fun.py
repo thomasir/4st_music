@@ -79,9 +79,12 @@ EIGHTBALL = [
 async def joke_cmd(client: Client, message: Message):
     joke = random.choice(JOKES)
     await message.reply(
-        f"😂 **Joke Time!**\n\n{joke}",
+        f"😂 **Joke Time!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{joke}",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("😂 Aur Joke!", callback_data="fun_joke"),
+            InlineKeyboardButton("🌹 Shayari", callback_data="fun_shayari"),
         ]]),
     )
 
@@ -90,9 +93,12 @@ async def joke_cmd(client: Client, message: Message):
 async def shayari_cmd(client: Client, message: Message):
     s = random.choice(SHAYARI)
     await message.reply(
-        f"🌹 **Shayari**\n\n_{s}_",
+        f"🌹 **Shayari**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"_{s}_",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🌹 Aur Shayari!", callback_data="fun_shayari"),
+            InlineKeyboardButton("✨ Quote", callback_data="fun_quote"),
         ]]),
     )
 
@@ -101,7 +107,9 @@ async def shayari_cmd(client: Client, message: Message):
 async def quote_cmd(client: Client, message: Message):
     q = random.choice(MOTIVATIONAL_QUOTES)
     await message.reply(
-        f"✨ **Quote of the Day**\n\n{q}",
+        f"✨ **Quote of the Day**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{q}",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("✨ Aur Quote!", callback_data="fun_quote"),
             InlineKeyboardButton("📤 Share", switch_inline_query=q[:100]),
@@ -113,9 +121,13 @@ async def quote_cmd(client: Client, message: Message):
 async def flip_cmd(client: Client, message: Message):
     result = random.choice(["🪙 **Heads!** (Sher ka muh)", "🪙 **Tails!** (Lakeer wali side)"])
     await message.reply(
-        f"🎰 **Coin Flip!**\n\n{result}\n\n_Naseeb ne decide kiya!_",
+        f"🪙 **Coin Flip!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{result}\n\n"
+        f"_Naseeb ne decide kiya!_ 🎰",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Flip Again!", callback_data="fun_flip"),
+            InlineKeyboardButton("🎲 Dice Roll!", callback_data="fun_dice"),
         ]]),
     )
 
@@ -124,12 +136,18 @@ async def flip_cmd(client: Client, message: Message):
 async def dice_cmd(client: Client, message: Message):
     result = random.randint(1, 6)
     emoji  = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"][result - 1]
-    msg = f"🎲 **Dice Roll!**\n\n{emoji} **{result}** nikla!\n\n"
-    msg += "_Jackpot!_ 🎉" if result == 6 else "_Aur try karo!_" if result == 1 else "_Theek thak!_"
+    comment = "_🎉 Jackpot! Lucky ho tum!_" if result == 6 else "_😢 Kitna bura! Ek aur try karo!_" if result == 1 else "_😏 Theek thak result!_"
+    msg = (
+        f"🎲 **Dice Roll!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{emoji} **{result}** aaya!\n\n"
+        f"{comment}"
+    )
     await message.reply(
         msg,
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("🎲 Roll Again!", callback_data="fun_dice"),
+            InlineKeyboardButton("🪙 Coin Flip", callback_data="fun_flip"),
         ]]),
     )
 
@@ -146,9 +164,14 @@ async def eightball_cmd(client: Client, message: Message):
         return
     answer = random.choice(EIGHTBALL)
     await message.reply(
-        f"🎱 **Magic 8-Ball**\n\n"
+        f"🎱 **Magic 8-Ball**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"❓ _{question}_\n\n"
         f"**🔮 Jawab:** {answer}",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🎲 Dice Roll", callback_data="fun_dice"),
+            InlineKeyboardButton("🪙 Coin Flip", callback_data="fun_flip"),
+        ]]),
     )
 
 
@@ -160,9 +183,12 @@ async def cb_joke(client, cq):
     joke = random.choice(JOKES)
     try:
         await cq.message.edit(
-            f"😂 **Joke Time!**\n\n{joke}",
+            f"😂 **Joke Time!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{joke}",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("😂 Aur Joke!", callback_data="fun_joke"),
+                InlineKeyboardButton("🌹 Shayari", callback_data="fun_shayari"),
             ]]),
         )
     except Exception:
@@ -175,9 +201,12 @@ async def cb_shayari(client, cq):
     s = random.choice(SHAYARI)
     try:
         await cq.message.edit(
-            f"🌹 **Shayari**\n\n_{s}_",
+            f"🌹 **Shayari**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"_{s}_",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🌹 Aur Shayari!", callback_data="fun_shayari"),
+                InlineKeyboardButton("✨ Quote", callback_data="fun_quote"),
             ]]),
         )
     except Exception:
@@ -190,7 +219,9 @@ async def cb_quote(client, cq):
     q = random.choice(MOTIVATIONAL_QUOTES)
     try:
         await cq.message.edit(
-            f"✨ **Quote of the Day**\n\n{q}",
+            f"✨ **Quote of the Day**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{q}",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("✨ Aur Quote!", callback_data="fun_quote"),
                 InlineKeyboardButton("📤 Share", switch_inline_query=q[:100]),
@@ -206,9 +237,13 @@ async def cb_flip(client, cq):
     result = random.choice(["🪙 **Heads!** (Sher ka muh)", "🪙 **Tails!** (Lakeer wali side)"])
     try:
         await cq.message.edit(
-            f"🎰 **Coin Flip!**\n\n{result}\n\n_Naseeb ne decide kiya!_",
+            f"🪙 **Coin Flip!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{result}\n\n"
+            f"_Naseeb ne decide kiya!_ 🎰",
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("🔄 Flip Again!", callback_data="fun_flip"),
+                InlineKeyboardButton("🎲 Dice Roll", callback_data="fun_dice"),
             ]]),
         )
     except Exception:
@@ -220,8 +255,13 @@ async def cb_dice(client, cq):
     await cq.answer()
     result = random.randint(1, 6)
     emoji  = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"][result - 1]
-    msg    = f"🎲 **Dice Roll!**\n\n{emoji} **{result}** nikla!\n\n"
-    msg   += "_Jackpot!_ 🎉" if result == 6 else "_Aur try karo!_" if result == 1 else "_Theek thak!_"
+    comment = "🎉 Jackpot! Lucky ho tum!" if result == 6 else "😢 Itna bura! Ek aur try!" if result == 1 else "😏 Theek thak!"
+    msg = (
+        f"🎲 **Dice Roll!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{emoji} **{result}** aaya!\n\n"
+        f"_{comment}_"
+    )
     try:
         await cq.message.edit(
             msg,

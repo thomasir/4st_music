@@ -290,30 +290,34 @@ async def start_private(client: Client, message: Message):
     total_chats  = await get_total_chats()
     quote        = random.choice(MOTIVATIONAL_QUOTES)
 
+    bot_me = await client.get_me()
     await message.reply(
-        f"**🎵 Namaste, {name}!** 👋\n\n"
-        f"Main hun **{BOT_NAME}** — Telegram ka sabse badiya All-in-One bot!\n\n"
-        f"**✨ Kya kya kar sakta hun:**\n"
-        f"> 🎵 Music + Video streaming (HD quality)\n"
-        f"> 👮 Full group management\n"
-        f"> 🛡️ Anti-spam, GBAN, Word filter\n"
-        f"> 🎮 Games + Economy + AI Chat\n"
-        f"> 📝 Notes, Stats, Broadcast\n"
+        f"**🎵 Namaste, {name}!** 👋\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"Main hun **{BOT_NAME}**\n"
+        f"_Telegram ka Ultimate All-in-One Bot!_\n\n"
+        f"**✨ Features:**\n"
+        f"🎵 Music + Video streaming · HD quality\n"
+        f"👮 Full group management suite\n"
+        f"🛡️ Anti-spam · GBAN · Word filter\n"
+        f"🎮 Economy · Games · AI Chat\n"
+        f"📝 Notes · Stats · Broadcast\n"
         f"{reward_text}\n\n"
-        f"**📊 Bot Stats:**\n"
-        f"> 👥 Users: `{total_users:,}`\n"
-        f"> 💬 Groups: `{total_chats:,}`\n\n"
-        f"**💬 Quote of the Day:**\n"
+        f"**📊 Live Stats:**\n"
+        f"> 👥 Users: **`{total_users:,}`**\n"
+        f"> 💬 Groups: **`{total_chats:,}`**\n"
+        f"> ⏱️ Uptime: `{uptime_str()}`\n\n"
+        f"**💬 Quote:**\n"
         f"> _{quote}_\n\n"
         f"_Apne group mein add karo aur enjoy karo!_ 🚀",
         reply_markup=InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("➕ Group mein Add karo", url=f"https://t.me/{(await client.get_me()).username}?startgroup=start"),
-                InlineKeyboardButton("❓ Help", callback_data="help_main"),
+                InlineKeyboardButton("➕ Group mein Add", url=f"https://t.me/{bot_me.username}?startgroup=start"),
+                InlineKeyboardButton("❓ Commands", callback_data="help_main"),
             ],
             [
-                InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
-                InlineKeyboardButton(f"👤 Owner: @{OWNER_USERNAME}", url=f"https://t.me/{OWNER_USERNAME}"),
+                InlineKeyboardButton("🔗 Support Chat", url=SUPPORT_CHAT),
+                InlineKeyboardButton(f"👑 @{OWNER_USERNAME}", url=f"https://t.me/{OWNER_USERNAME}"),
             ],
         ]),
         disable_web_page_preview=True,
@@ -337,12 +341,14 @@ async def start_private(client: Client, message: Message):
 @Client.on_message(filters.command(["start"]) & filters.group)
 async def start_group(client: Client, message: Message):
     await register_chat(message.chat.id, message.chat.title, "group")
-    bot_me = await client.get_me()
     await message.reply(
-        f"**🎵 {BOT_NAME}** — Online hun! 🔥\n\n"
+        f"**🎵 {BOT_NAME}** — Online Hoon! 🔥\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"**▶️ Quick Start:**\n"
         f"• `/play <song>` — Music shuru karo\n"
+        f"• `/vplay <song>` — 1080p Video play karo\n"
         f"• `/help` — Sab commands dekho\n\n"
-        f"_DM mein /start karo economy join karne ke liye!_",
+        f"> 💡 _DM mein `/start` karo Economy join ke liye!_",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("❓ Help & Commands", callback_data="help_main"),
             InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
@@ -408,14 +414,18 @@ async def cb_noop(client, cq):
 
 @Client.on_message(filters.command(["ping"]))
 async def ping_cmd(client: Client, message: Message):
-    start  = time.monotonic()
-    msg    = await message.reply("🏓 Pinging...")
-    delay  = (time.monotonic() - start) * 1000
+    start = time.monotonic()
+    msg   = await message.reply("🏓 _Pinging..._")
+    delay = (time.monotonic() - start) * 1000
+    quality = "🟢 Excellent" if delay < 100 else "🟡 Good" if delay < 300 else "🔴 Slow"
     await msg.edit(
-        f"**🏓 Pong!**\n\n"
-        f"⚡ Ping: `{delay:.1f}ms`\n"
-        f"⏱️ Uptime: `{uptime_str()}`\n"
-        f"📦 Version: `{BOT_NAME}`"
+        f"**🏓 Pong!**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"⚡ **Ping:** `{delay:.1f}ms` {quality}\n"
+        f"⏱️ **Uptime:** `{uptime_str()}`\n"
+        f"📦 **Version:** `{BOT_NAME}`\n"
+        f"🐍 **Python:** 3.12\n"
+        f"🔥 **Status:** Online ✅"
     )
 
 
@@ -427,25 +437,32 @@ async def about_cmd(client: Client, message: Message):
     total_users = await get_total_users()
     total_chats = await get_total_chats()
     await message.reply(
-        f"**🎵 {BOT_NAME}**\n\n"
-        f"> 🤖 Bot: @{bot_me.username}\n"
-        f"> 👑 Owner: @{OWNER_USERNAME}\n"
-        f"> 📦 Version: `{BOT_NAME}`\n"
-        f"> 🐍 Language: Python 3.12\n"
-        f"> 📚 Framework: Pyrofork + PyTgCalls\n"
+        f"**🎵 {BOT_NAME}**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🤖 **Bot:** @{bot_me.username}\n"
+        f"👑 **Owner:** @{OWNER_USERNAME}\n"
+        f"📦 **Version:** `{BOT_NAME}`\n"
+        f"🐍 **Language:** Python 3.12\n"
+        f"📚 **Framework:** Pyrofork + PyTgCalls\n\n"
+        f"**📊 Live Stats:**\n"
         f"> ⏱️ Uptime: `{uptime_str()}`\n"
-        f"> 👥 Users: `{total_users:,}`\n"
-        f"> 💬 Groups: `{total_chats:,}`\n\n"
+        f"> 👥 Users: **`{total_users:,}`**\n"
+        f"> 💬 Groups: **`{total_chats:,}`**\n\n"
         f"**📡 Features:**\n"
-        f"> 🎵 Music/Video streaming\n"
-        f"> 👮 Group management\n"
-        f"> 🛡️ Anti-spam & GBAN\n"
-        f"> 🎮 Economy & Games\n"
-        f"> 🤖 AI Chatbot\n",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
-            InlineKeyboardButton("👤 Owner", url=f"https://t.me/{OWNER_USERNAME}"),
-        ]]),
+        f"🎵 Music/Video streaming · HD Quality\n"
+        f"👮 Complete Group management\n"
+        f"🛡️ Anti-spam · GBAN · Protection\n"
+        f"🎮 Economy · Games · Fun\n"
+        f"🤖 AI Chatbot · Auto-reactions\n",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔗 Support Chat", url=SUPPORT_CHAT),
+                InlineKeyboardButton(f"👑 @{OWNER_USERNAME}", url=f"https://t.me/{OWNER_USERNAME}"),
+            ],
+            [
+                InlineKeyboardButton("❓ Help / Commands", callback_data="help_main"),
+            ]
+        ]),
         disable_web_page_preview=True,
     )
 

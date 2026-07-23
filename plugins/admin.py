@@ -79,15 +79,17 @@ async def ban_cmd(client: Client, message: Message):
                     pass
 
         await message.reply(
-            f"🔨 **Banned!**\n\n"
-            f"👤 {user.mention}\n"
-            f"🆔 `{user.id}`\n"
-            f"📝 Reason: {reason}"
+            f"🔨 **BANNED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"📝 **Reason:** {reason}\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
         )
     except UserAdminInvalid:
-        await message.reply("❌ Is user ko ban nahi kar sakta (admin hai).")
+        await message.reply("❌ **Is user ko ban nahi kar sakta!**\n> User admin hai ya bot se upar hai.")
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /unban ────────────────────────────────────────────────────────
@@ -101,9 +103,15 @@ async def unban_cmd(client: Client, message: Message):
         return await message.reply(err)
     try:
         await client.unban_chat_member(message.chat.id, user.id)
-        await message.reply(f"✅ **Unbanned:** {user.mention}")
+        await message.reply(
+            f"✅ **UNBANNED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
+        )
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /kick ─────────────────────────────────────────────────────────
@@ -124,14 +132,17 @@ async def kick_cmd(client: Client, message: Message):
         await asyncio.sleep(1)
         await client.unban_chat_member(message.chat.id, user.id)
         await message.reply(
-            f"👢 **Kicked!**\n\n"
-            f"👤 {user.mention}\n"
-            f"📝 Reason: {reason}"
+            f"👢 **KICKED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"📝 **Reason:** {reason}\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
         )
     except UserAdminInvalid:
-        await message.reply("❌ Admin ko kick nahi kar sakta.")
+        await message.reply("❌ **Admin ko kick nahi kar sakta!**\n> Pehle demote karo.")
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /mute ─────────────────────────────────────────────────────────
@@ -153,14 +164,17 @@ async def mute_cmd(client: Client, message: Message):
             ChatPermissions(can_send_messages=False)
         )
         await message.reply(
-            f"🔇 **Muted!**\n\n"
-            f"👤 {user.mention}\n"
-            f"📝 Reason: {reason}"
+            f"🔇 **MUTED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"📝 **Reason:** {reason}\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
         )
     except UserAdminInvalid:
-        await message.reply("❌ Admin ko mute nahi kar sakta.")
+        await message.reply("❌ **Admin ko mute nahi kar sakta!**\n> Pehle demote karo.")
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /unmute ───────────────────────────────────────────────────────
@@ -182,9 +196,15 @@ async def unmute_cmd(client: Client, message: Message):
                 can_add_web_page_previews=True,
             )
         )
-        await message.reply(f"🔊 **Unmuted:** {user.mention}")
+        await message.reply(
+            f"🔊 **UNMUTED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
+        )
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /warn ─────────────────────────────────────────────────────────
@@ -202,6 +222,7 @@ async def warn_cmd(client: Client, message: Message):
 
     count = await warn_user(user.id, message.chat.id, reason, message.from_user.id)
 
+    warn_progress = "🔴" * count + "⚪" * (3 - count)
     if count >= 3:
         await clear_warns(user.id, message.chat.id)
         try:
@@ -209,16 +230,23 @@ async def warn_cmd(client: Client, message: Message):
         except Exception:
             pass
         await message.reply(
-            f"⚠️ **3rd Warning = Banned!**\n\n"
-            f"👤 {user.mention}\n"
-            f"📝 Last reason: {reason}"
+            f"🚨 **3 WARNINGS = BANNED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"📝 **Last Reason:** {reason}\n"
+            f"⚡ **Action:** Auto-banned!"
         )
     else:
         await message.reply(
-            f"⚠️ **Warned!** ({count}/3)\n\n"
-            f"👤 {user.mention}\n"
-            f"📝 Reason: {reason}\n\n"
-            f"_3 warns pe auto-ban!_"
+            f"⚠️ **WARNED!** `{count}/3`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"📝 **Reason:** {reason}\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}\n\n"
+            f"**Warns:** {warn_progress}\n"
+            f"> ⚠️ _3rd warn pe automatic ban!_"
         )
 
 
@@ -232,9 +260,19 @@ async def warns_cmd(client: Client, message: Message):
         return await message.reply(err)
     warns = await get_warns(user.id, message.chat.id)
     if not warns:
-        await message.reply(f"✅ {user.mention} ka koi warn nahi hai.")
+        await message.reply(
+            f"✅ **Clean Record!**\n\n"
+            f"👤 {user.mention} ka koi warn nahi hai. 🎉"
+        )
         return
-    lines = [f"⚠️ **{user.mention} ke Warns ({len(warns)}/3):**\n"]
+    warn_progress = "🔴" * len(warns) + "⚪" * (3 - len(warns))
+    lines = [
+        f"⚠️ **Warn History**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 **User:** {user.mention}\n"
+        f"**Warns:** {warn_progress} `{len(warns)}/3`\n\n"
+        f"**Reasons:**"
+    ]
     for i, w in enumerate(warns, 1):
         lines.append(f"`{i}.` {w}")
     await message.reply("\n".join(lines))
@@ -250,7 +288,11 @@ async def clearwarn_cmd(client: Client, message: Message):
     if err:
         return await message.reply(err)
     await clear_warns(user.id, message.chat.id)
-    await message.reply(f"✅ {user.mention} ke saare warns clear ho gaye!")
+    await message.reply(
+        f"✅ **Warns Cleared!**\n\n"
+        f"👤 {user.mention} ke saare warns remove kar diye.\n"
+        f"**Warns:** ⚪⚪⚪ `0/3`"
+    )
 
 
 # ── /promote (basic, no ban rights) ──────────────────────────────
@@ -291,15 +333,18 @@ async def promote_cmd(client: Client, message: Message):
         except Exception:
             pass
         await message.reply(
-            f"✅ **Promoted!**\n\n"
-            f"👤 {user.mention}\n"
-            f"🏷 Title: **{title}**\n"
-            f"⚠️ _Ban rights nahi diye (limited admin)_"
+            f"⭐ **PROMOTED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"🏷️ **Title:** `{title}`\n"
+            f"🔒 **Rights:** Limited _(no ban rights)_\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
         )
     except ChatAdminRequired:
-        await message.reply("❌ Mujhe promote karne ka right chahiye.")
+        await message.reply("❌ **Promote karne ka right nahi hai!**\n> Mujhe promote rights chahiye.")
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /fpromote (full rights) ───────────────────────────────────────
@@ -334,15 +379,18 @@ async def fpromote_cmd(client: Client, message: Message):
         except Exception:
             pass
         await message.reply(
-            f"👑 **Full Promote!**\n\n"
-            f"👤 {user.mention}\n"
-            f"🏷 Title: **{title}**\n"
-            f"✅ _Puri rights di gayi hain_"
+            f"👑 **FULL PROMOTED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"🏷️ **Title:** `{title}`\n"
+            f"🔓 **Rights:** Full Admin ✅\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
         )
     except ChatAdminRequired:
-        await message.reply("❌ Mujhe promote karne ka right chahiye.")
+        await message.reply("❌ **Full promote ka right nahi hai!**")
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /demote ───────────────────────────────────────────────────────
@@ -364,9 +412,15 @@ async def demote_cmd(client: Client, message: Message):
             can_invite_users=False,
             can_pin_messages=False,
         )
-        await message.reply(f"🔽 **Demoted:** {user.mention}")
+        await message.reply(
+            f"🔽 **DEMOTED!**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **User:** {user.mention}\n"
+            f"🆔 **ID:** `{user.id}`\n"
+            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
+        )
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /pin / /unpin ─────────────────────────────────────────────────
@@ -378,9 +432,9 @@ async def pin_cmd(client: Client, message: Message):
         return await message.reply("❌ Kisi message pe reply karein.")
     try:
         await message.reply_to_message.pin()
-        await message.reply("📌 **Message pinned!**")
+        await message.reply("📌 **Message Pinned!**\n\n_Sab log dekh sakte hain ab!_")
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 @Client.on_message(filters.command(["unpin"]) & filters.group)
@@ -388,9 +442,9 @@ async def pin_cmd(client: Client, message: Message):
 async def unpin_cmd(client: Client, message: Message):
     try:
         await client.unpin_chat_message(message.chat.id)
-        await message.reply("📌 **Message unpinned!**")
+        await message.reply("📌 **Message Unpinned!**")
     except Exception as e:
-        await message.reply(f"❌ Error: `{e}`")
+        await message.reply(f"❌ **Error:** `{e}`")
 
 
 # ── /purge ────────────────────────────────────────────────────────
