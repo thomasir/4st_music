@@ -215,6 +215,25 @@ async def _set_volume_bg(chat_id: int):
 
 async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False):
     """Core: resolve stream → join VC → start playback → show NP card."""
+    # BUG FIX: outer try/except — agar koi bhi unhandled exception aaye toh
+    # user ko silently kuch nahi dikhta tha (create_task exceptions swallow karta hai).
+    # Ab hamesha error message milega.
+    try:
+        await _do_play_inner(chat_id, song, status_msg, is_video)
+    except Exception as e:
+        log.exception("_do_play unhandled crash in chat %s", chat_id)
+        try:
+            await bot.send_message(
+                chat_id,
+                f"❌ **Internal error — please report:**\n`{str(e)[:300]}`\n\n"
+                "Dobara `/play` karo ya `/stop` karke restart karo! 🎵"
+            )
+        except Exception:
+            pass
+
+
+async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = False):
+    """Actual play logic — called by _do_play which wraps it in error handler."""
     async with _get_lock(chat_id):
 
         # ── Step 2 animation: Found! Loading... ──────────────────
@@ -235,13 +254,25 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
             await _safe_edit(status_msg, "❌ **Source URL khaali hai.**\nKoi aur song try karo! 🎵")
             return
 
+        # BUG FIX: asyncio.wait_for se 90s timeout — bina iske yt-dlp cloud IPs pe
+        # hang karta tha (socket_timeout=20 per attempt, lekin 10 combos = 200s possible).
+        # 90s mein fail ho jaayega aur user ko clear error milega.
         try:
-            stream_url, audio_url, dur, http_headers = await get_stream(
-                source,
-                is_video=is_video,
+            stream_url, audio_url, dur, http_headers = await asyncio.wait_for(
+                get_stream(source, is_video=is_video),
+                timeout=90.0,
             )
             if dur and not song.duration:
                 song.duration = dur
+        except asyncio.TimeoutError:
+            await _safe_edit(
+                status_msg,
+                "⏱️ **Timeout!** YouTube bahut slow hai abhi.\n\n"
+                "💡 **Fix:** Heroku dashboard mein `YOUTUBE_COOKIES` set karo\n"
+                "(Chrome se cookies export karke Netscape format mein).\n\n"
+                "Thodi der mein dobara try karo! 🎵"
+            )
+            return
         except Exception as e:
             await _safe_edit(status_msg, f"❌ **Stream nahi mila:**\n`{e}`\n\nDusra song try karo! 🎵")
             return
@@ -398,9 +429,24 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
         f"⏳ _Thoda wait karo, dhundh raha hun!_"
     )
 
+    # BUG FIX: asyncio.wait_for 45s timeout — bina iske yt-dlp ka ytsearch1: call
+    # cloud IPs pe hang karta tha, status message hamesha "🔍 Searching..." pe
+    # stuck rehta tha. Ab 45s mein timeout ho jaayega aur clear error milega.
     try:
         from helpers.youtube import search_song
-        song_info = await search_song(query, is_video=is_video)
+        song_info = await asyncio.wait_for(
+            search_song(query, is_video=is_video),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError:
+        await _safe_edit(
+            status_msg,
+            f"⏱️ **Search timeout!** YouTube respond nahi kar raha.\n\n"
+            f"💡 **Fix:** Heroku mein `YOUTUBE_COOKIES` set karo\n"
+            f"Ya seedha YouTube link deke try karo:\n"
+            f"`/play https://youtube.com/watch?v=...`"
+        )
+        return
     except Exception as e:
         await _safe_edit(status_msg, f"❌ **Search error:**\n`{e}`")
         return
@@ -490,7 +536,13 @@ async def playforce_cmd(client: Client, message: Message):
 
     try:
         from helpers.youtube import search_song
-        song_info = await search_song(query, is_video=False)
+        song_info = await asyncio.wait_for(
+            search_song(query, is_video=False),
+            timeout=45.0,
+        )
+    except asyncio.TimeoutError:
+        await _safe_edit(status_msg, "⏱️ **Search timeout!** Seedha YouTube link try karo.")
+        return
     except Exception as e:
         await _safe_edit(status_msg, f"❌ **Search error:**\n`{e}`")
         return

@@ -148,6 +148,10 @@ def _opts(
         "geo_bypass":               True,
         "check_formats":            False,   # don't pre-verify URL reachability
         "allow_unplayable_formats": False,
+        # BUG FIX: socket_timeout add kiya — bina iske yt-dlp cloud IPs pe
+        # indefinitely hang karta tha jab YouTube respond nahi karta tha.
+        # 20s per attempt reasonable hai; combos ka loop overall timeout control karta hai.
+        "socket_timeout":           20,
         "extractor_args": {
             "youtube": {
                 "player_client": clients,
