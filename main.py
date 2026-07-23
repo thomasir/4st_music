@@ -11,11 +11,18 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# ── FFmpeg PATH fix (Heroku / cloud) ─────────────────────────────────────────
-# On Heroku, `worker:` dynos don't always source .profile.d/ scripts, so the
-# vendor ffmpeg installed by bin/post_compile may not be in PATH when Python
-# starts. Setting it here at the Python level ensures pytgcalls always finds
-# ffprobe regardless of how the process was launched.
+# ── FFmpeg PATH fix ───────────────────────────────────────────────────────────
+# ntgcalls (used by pytgcalls) calls `shutil.which('ffprobe')` before every
+# stream start.  If ffprobe is missing, every /play fails with
+# "ffprobe not installed".
+#
+# Priority:
+#  1. Vendor static build installed by bin/post_compile (Heroku)
+#  2. static-ffmpeg Python package  ← cross-platform fallback, no OS install needed
+#  3. System ffmpeg already in PATH (most Linux VPS / Docker images)
+
+import shutil as _shutil
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _FFMPEG_CANDIDATES = [
     os.path.join(_HERE, "vendor", "ffmpeg", "bin"),   # post_compile static build
@@ -25,6 +32,16 @@ for _d in _FFMPEG_CANDIDATES:
     if os.path.isdir(_d) and _d not in os.environ.get("PATH", ""):
         os.environ["PATH"] = _d + ":" + os.environ.get("PATH", "")
         break
+
+# Fallback: use static-ffmpeg Python package if ffprobe is still not in PATH.
+# This handles VPS / Railway / Render / any non-Heroku host where the vendor
+# directory doesn't exist and ffmpeg isn't pre-installed.
+if not _shutil.which("ffprobe"):
+    try:
+        import static_ffmpeg
+        static_ffmpeg.add_paths()          # downloads binaries once, then adds to PATH
+    except ImportError:
+        pass   # static-ffmpeg not installed; rely on system ffmpeg
 
 logging.basicConfig(
     level=logging.INFO,
