@@ -2,7 +2,12 @@
 misc.py — v6.0 Ultimate
 /start — animated welcome + economy reward + must-join check
 /help  — paginated modular help with callbacks
-/ping, /about, /id
+/ping, /about, /id, /whois, /info
+BUG FIXES:
+  - BOT_VERSION correct field use in /about and /ping
+  - /info alias removed from /about (was conflicting with /info @user)
+  - Added /whois + /info user lookup commands
+  - Bot username cached (no extra get_me() on every /start)
 """
 
 import time
@@ -21,11 +26,15 @@ from config import (
 )
 from database import (
     has_started, init_economy, add_balance, get_balance,
-    register_user, register_chat, get_total_chats, get_total_users
+    register_user, register_chat, get_total_chats, get_total_users,
+    get_name_history, get_common_chats_count, get_user_info
 )
 
 log = logging.getLogger("ApexBot.misc")
 START_TIME = time.time()
+
+# Cache bot username to avoid repeated get_me() calls
+_bot_username: str | None = None
 
 MOTIVATIONAL_QUOTES = [
     "\"Sapne woh nahi jo aankh band karne se aate hain, sapne woh hain jo aankh khulne nahi dete.\" — APJ Abdul Kalam ✨",
@@ -54,177 +63,171 @@ MODULES = [
     {
         "name": "🎵 Music",
         "desc": (
-            "**🎵 Music Module**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "_Studio quality audio · 1080p Video · Cookies-powered_\n\n"
-            "**▶️ Play:**\n"
-            "`/play <song/link>` — 🎵 Audio play\n"
-            "`/vplay <song/link>` — 📺 1080p Video play\n"
-            "`/playforce <song>` — ⚡ Queue skip karke instantly play\n\n"
+            "**🎵 Music Module**\n\n"
+            "Telegram ka sabse fast music bot — Studio quality audio, 1080p video!\n\n"
+            "**▶️ Play Commands:**\n"
+            "• `/play <song/link>` — Audio play karo\n"
+            "• `/vplay <song/link>` — 1080p Video play karo\n"
+            "• `/playforce <song>` — ⚡ Instantly play (queue skip)\n\n"
             "**🎛️ Controls:**\n"
-            "`/pause` · `/resume` · `/skip` · `/stop`\n"
-            "`/loop` — 🔁 Loop ON/OFF\n"
-            "`/shuffle` — 🔀 Queue shuffle\n\n"
-            "**📋 Info & Volume:**\n"
-            "`/np` — Now Playing card 🎶\n"
-            "`/queue` — Queue list dekho 📋\n"
-            "`/vol 0-200` — Volume set karo 🔊\n\n"
-            "> 💡 Song naam ya YouTube link — dono kaam karte hain!\n"
-            "> 🎛️ Buttons se bhi sab controls milte hain\n"
-            "> 🔥 `/vol 200` = Maximum boost!"
+            "• `/pause` — Pause karo\n"
+            "• `/resume` — Resume karo\n"
+            "• `/skip` — Agli song pe jao\n"
+            "• `/stop` — Band karo + queue clear\n"
+            "• `/loop` — 🔁 Loop toggle\n"
+            "• `/shuffle` — 🔀 Queue shuffle\n\n"
+            "**📋 Info:**\n"
+            "• `/queue` — Queue dekho\n"
+            "• `/np` — Now Playing card\n"
+            "• `/vol 0-200` — Volume set karo\n\n"
+            "**💡 Tips:**\n"
+            "> Song ka naam ya YouTube link dono kaam karte hain!\n"
+            "> Buttons se bhi control kar sakte ho 🎛️\n"
+            "> `/vol 200` = maximum boost 🔥"
         )
     },
     {
         "name": "👮 Admin",
         "desc": (
-            "**👮 Admin Module**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "_Complete group management — ek jagah sab kuch!_\n\n"
-            "**🔨 Ban / Kick / Mute:**\n"
-            "`/ban [user] [reason]` — Ban karo\n"
-            "`/unban [user]` — Unban karo\n"
-            "`/kick [user] [reason]` — Kick karo\n"
-            "`/mute [user]` — Mute karo\n"
-            "`/unmute [user]` — Unmute karo\n\n"
-            "**⭐ Promote / Demote:**\n"
-            "`/promote [user] [title]` — Limited admin\n"
-            "`/fpromote [user] [title]` — Full admin 👑\n"
-            "`/demote [user]` — Admin rights hatao\n\n"
+            "**👮 Admin Module**\n\n"
+            "Complete group management — ek jagah sab kuch!\n\n"
+            "**🔨 Ban/Kick/Mute:**\n"
+            "• `/ban [user] [reason]` — Ban karo\n"
+            "• `/unban [user]` — Unban karo\n"
+            "• `/kick [user] [reason]` — Kick karo\n"
+            "• `/mute [user]` — Mute karo\n"
+            "• `/unmute [user]` — Unmute karo\n\n"
+            "**⭐ Promote/Demote:**\n"
+            "• `/promote [user] [title]` — Admin banao\n"
+            "• `/fpromote [user] [title]` — Full admin\n"
+            "• `/demote [user]` — Demote karo\n\n"
             "**⚠️ Warn System:**\n"
-            "`/warn [user] [reason]` — Warn do\n"
-            "`/warns [user]` — Warns history dekho\n"
-            "`/clearwarn [user]` — Warns clear karo\n"
-            "> 🔴🔴🔴 3 warns = auto-ban!\n\n"
-            "**📌 Messages:**\n"
-            "`/pin` — Pin karo · `/unpin` — Unpin\n"
-            "`/purge` — Reply se ab tak delete\n"
-            "`/admins` — Admin list dekho\n"
-            "`/report` — Admins ko report karo\n"
-            "`/banall` — Sab ban (owner only)\n\n"
-            "> ⚡ Safety: 10s mein 3+ bans → auto-demote!"
+            "• `/warn [user] [reason]` — Warn do (3 = auto-ban!)\n"
+            "• `/warns [user]` — Warns dekho\n"
+            "• `/clearwarn [user]` — Warns clear karo\n\n"
+            "**📌 Other:**\n"
+            "• `/pin` — Message pin karo\n"
+            "• `/unpin` — Unpin karo\n"
+            "• `/purge` — Reply se ab tak delete\n"
+            "• `/admins` — Admin list\n"
+            "• `/report` — Admins ko report karo\n\n"
+            "> ⚠️ **Safety:** 10s mein 3+ bans → auto-demote!"
         )
     },
     {
         "name": "💰 Economy",
         "desc": (
-            "**💰 Economy & Games Module**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "_Virtual $ economy — earn, spend, compete!_\n"
-            "_DM mein `/start` karo pehle!_\n\n"
+            "**💰 Economy & Games Module**\n\n"
+            "Virtual $ economy — earn, spend, compete!\n"
+            "Shuru karne ke liye bot ko DM mein `/start` karo!\n\n"
             "**💵 Economy:**\n"
-            "`/balance` — 💳 Wallet dekho\n"
-            "`/daily` — 🎁 Daily reward lo\n"
-            "`/transfer @user amount` — 💸 Transfer karo\n"
-            "`/richlist` — 🏆 Top earners\n\n"
-            "**🎮 Economy Games:**\n"
-            "`/coinflip heads/tails <amount>` — 🪙 Bet lagao\n"
-            "`/dice <amount>` — 🎲 Dice bet\n\n"
-            "**⚔️ Social Games:**\n"
-            "`/slap @user` — 👋 Thappad maaro!\n"
-            "`/fight @user` — 🥊 Fight karo\n"
-            "`/marry @user` — 💍 Shaadi karo\n"
-            "`/divorce` — 💔 Divorce karo\n"
-            "`/kill @user` — ☠️ Kill attempt\n"
-            "`/rob @user` — 💰 Rob attempt\n\n"
-            "> 🛡️ `/protect` se kuch der ke liye safe raho!"
+            "• `/balance` — Wallet dekho\n"
+            "• `/daily` — Daily reward lo (24h cooldown)\n"
+            "• `/transfer @user amount` — Transfer karo\n"
+            "• `/richlist` — Top earners\n\n"
+            "**⚔️ PvP Games:**\n"
+            "• `/kill @user` — Attack karo (65% win rate)\n"
+            "• `/rob @user` — Loot karo (55% win rate)\n"
+            "• `/revive @user` — Revive karo ($200 cost)\n"
+            "• `/protect @user` — 4h protection ($300)\n\n"
+            "**🎭 Social:**\n"
+            "• `/slap @user` — Thappad maaro 😂\n"
+            "• `/fight @user` — Fight karo 🥊\n"
+            "• `/marry @user` — Shaadi karo 💍\n"
+            "• `/divorce` — Divorce karo 💔\n\n"
+            "> 💡 `/start` karo DM mein pehli baar ke liye reward milega!"
         )
     },
     {
         "name": "🛡️ Safety",
         "desc": (
-            "**🛡️ Safety & Protection Module**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n"
-            "_Group ko 24/7 safe rakhta hai!_\n\n"
-            "**🚫 Anti-Spam (Auto):**\n"
-            "• Flood control — 7 msgs / 5s pe auto-mute (60s)\n"
-            "• Anti-raid — 10+ joins/30s pe group lock\n"
-            "• Auto unlocks after 5 minutes\n\n"
+            "**🛡️ Safety & Protection Module**\n\n"
+            "Group ko safe rakhta hai — 24/7!\n\n"
+            "**🚫 Anti-Spam:**\n"
+            "• Auto-detect aur mute spam users\n"
+            "• Flood control — 7 msgs in 5s = mute\n"
+            "• Anti-raid — 10 joins/30s = group lock\n\n"
             "**🔞 Anti-Porn:**\n"
-            "`/antiporn on` · `/antiporn off` — (Admin)\n"
-            "• NSFW media auto-detect + delete + warn\n\n"
-            "**🌍 Global Ban (GBAN):**\n"
-            "`/gban @user [reason]` — Global ban\n"
-            "`/ungban @user` — Global unban\n"
-            "`/gbans` — Total GBANs count\n"
-            "> 🤖 Gbanned users auto-ban on join!\n\n"
+            "• `/antiporn on/off` — Toggle _(Admin)_\n"
+            "• NSFW stickers auto-detect + delete\n\n"
+            "**🌍 Global Ban:**\n"
+            "• `/gban @user [reason]` — Global ban\n"
+            "• `/ungban @user` — Ungban\n"
+            "• `/gbans` — Total GBANs dekho\n\n"
             "**🔤 Word Filter:**\n"
-            "`/addfilter <word>` — Filter add karo\n"
-            "`/rmfilter <word>` — Filter remove\n"
-            "`/filters` — All filters list\n\n"
-            "**😊 Auto Reactions:**\n"
-            "`/reaction on` · `/reaction off` — Toggle"
+            "• `/addfilter <word>` — Word filter add\n"
+            "• `/rmfilter <word>` — Filter remove\n"
+            "• `/filters` — All filters dekho\n\n"
+            "> 🤖 Bot auto-bans gbanned users on join!"
         )
     },
     {
         "name": "📝 Tools",
         "desc": (
-            "**📝 Tools & Utilities Module**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**📝 Tools & Utilities Module**\n\n"
             "**📌 Notes:**\n"
-            "`/note <name> <content>` — Note save\n"
-            "`/get <name>` · `#notename` — Note dekho\n"
-            "`/notes` — All notes list\n"
-            "`/delnote <name>` — Note delete\n\n"
-            "**👋 Welcome / Goodbye:**\n"
-            "`/setwelcome <text>` — Welcome msg set\n"
-            "`/setgoodbye <text>` — Goodbye msg set\n"
-            "`/welcome on/off` · `/goodbye on/off`\n"
-            "`/resetwelcome` · `/resetgoodbye`\n"
-            "> Placeholders: `{mention}` `{name}` `{chat}` `{id}`\n\n"
+            "• `/savenote <name> <content>` — Note save karo\n"
+            "• `/get <name>` — Note dekho\n"
+            "• `#notename` — Shortcut se note pao\n"
+            "• `/notes` — All notes list\n"
+            "• `/delnote <name>` — Delete note\n\n"
+            "**👋 Welcome:**\n"
+            "• `/setwelcome <text>` — Welcome msg set\n"
+            "• `/setgoodbye <text>` — Goodbye msg set\n"
+            "• `/welcome on/off` — Toggle\n\n"
             "**📊 Stats:**\n"
-            "`/stats` — Group message stats\n"
-            "`/topusers` — Top chatters 🏆\n"
-            "`/topgroups` — Most active groups 🌍\n\n"
+            "• `/stats` — Group stats dekho\n"
+            "• `/rankings` — Top chatters\n"
+            "• `/topgroups` — Most active groups\n\n"
+            "**📢 Broadcast _(Owner only)_:**\n"
+            "• `/broadcast <msg>` — Sab ko bhejo\n\n"
             "**🔍 User Info:**\n"
-            "`/id` — User/Chat ID\n"
-            "`/about` — Bot info\n"
-            "`/ping` — Bot speed check\n\n"
-            "**📢 Broadcast:**\n"
-            "`/broadcast <msg>` — Sab users ko bhejo _(Owner)_"
+            "• `/id` — User/Chat ID dekho\n"
+            "• `/whois @user` — Full user info\n"
+            "• `/info @user` — Same as whois"
         )
     },
     {
         "name": "🎮 Fun",
         "desc": (
-            "**🎮 Fun & Entertainment Module**\n"
-            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "**😂 Fun Commands:**\n"
-            "`/joke` — Random joke sunao 😂\n"
-            "`/shayari` — Romantic shayari 🌹\n"
-            "`/quote` — Motivational quote ✨\n"
-            "`/flip` — Coin flip 🪙\n"
-            "`/dice` — Dice roll 🎲\n"
-            "`/8ball <question>` — Magic 8-Ball 🎱\n\n"
-            "**🎭 Games:**\n"
-            "`/truth` — Truth question 🤔\n"
-            "`/dare` — Dare challenge 😈\n"
-            "`/wyr` — Would You Rather? 🤷\n"
-            "`/trivia` — Trivia question 🧠\n\n"
-            "**✏️ Name & DP:**\n"
-            "`/genname <name>` — Fancy fonts generate\n"
-            "`/gendp <name>` — Profile picture banao\n\n"
+            "**🎮 Fun & Entertainment Module**\n\n"
+            "**😂 Fun:**\n"
+            "• `/joke` — Random joke\n"
+            "• `/shayari` — Romantic shayari\n"
+            "• `/quote` — Motivational quote\n"
+            "• `/flip` — Coin flip\n"
+            "• `/dice` — Dice roll\n"
+            "• `/8ball <question>` — Magic 8ball\n\n"
+            "**🎮 Classic Games:**\n"
+            "• `/truth` — Truth question\n"
+            "• `/dare` — Dare challenge\n"
+            "• `/wyr` — Would you rather?\n"
+            "• `/trivia` — Quiz question (10s)\n\n"
             "**🤖 AI Chatbot:**\n"
-            "`/chatbot on/off` — Toggle AI replies\n"
-            "• Bot reply karo ya mention karo — AI jawab dega!\n\n"
-            "**🏷️ Tag:**\n"
-            "`/tagall [msg]` — Sab members tag\n"
-            "`/tagadmins [msg]` — Admins tag\n"
-            "`/ontag [msg]` — Same as tagall"
+            "• Group mein mention karo ya reply karo\n"
+            "• `/chatbot on/off` — Toggle _(Admin)_\n\n"
+            "**🏷️ TagAll _(Admin)_:**\n"
+            "• `/tagall <msg>` — Sab ko tag karo\n\n"
+            "**😊 Reactions _(Admin)_:**\n"
+            "• `/reaction on/off` — Auto reactions toggle\n\n"
+            "> 💡 `/chatbot on` karo aur bot se baat karo!"
         )
     },
 ]
 
 def help_markup(page: int) -> InlineKeyboardMarkup:
+    total = len(MODULES)
     rows = []
     # Module buttons (2 per row)
     mod_btns = [
         InlineKeyboardButton(MODULES[i]["name"], callback_data=f"help_mod_{i}")
-        for i in range(len(MODULES))
+        for i in range(total)
     ]
     for i in range(0, len(mod_btns), 2):
         rows.append(mod_btns[i:i+2])
+    # Bottom nav
     rows.append([
-        InlineKeyboardButton("🔗 Support Chat", url=SUPPORT_CHAT),
+        InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
         InlineKeyboardButton("❌ Close", callback_data="help_close"),
     ])
     return InlineKeyboardMarkup(rows)
@@ -234,31 +237,20 @@ def module_markup(page: int) -> InlineKeyboardMarkup:
     total = len(MODULES)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"help_mod_{page-1}"))
-    nav.append(InlineKeyboardButton(f"📄 {page+1} / {total}", callback_data="noop"))
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"help_mod_{page-1}"))
+    nav.append(InlineKeyboardButton(f"📋 {page+1}/{total}", callback_data="noop"))
     if page < total - 1:
         nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"help_mod_{page+1}"))
     return InlineKeyboardMarkup([
         nav,
-        [
-            InlineKeyboardButton("🏠 Main Menu", callback_data="help_main"),
-            InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
-        ],
+        [InlineKeyboardButton("🏠 Main Menu", callback_data="help_main")],
     ])
 
 
 HELP_TEXT = (
-    f"**🎵 {BOT_NAME}**\n"
-    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    f"🤖 _All-in-One Bot — Music · Admin · Fun · Economy_\n\n"
-    f"**📂 Modules:**\n"
-    f"🎵 Music — Play, Queue, Volume, Loop\n"
-    f"👮 Admin — Ban, Kick, Mute, Warn, Promote\n"
-    f"💰 Economy — Balance, Daily, Games\n"
-    f"🛡️ Safety — Anti-spam, GBAN, Filter\n"
-    f"📝 Tools — Notes, Welcome, Stats, Info\n"
-    f"🎮 Fun — Jokes, Games, AI Chat, Tag\n\n"
-    f"**👇 Neeche se module select karo:**"
+    f"**🎵 {BOT_NAME} — Help Menu**\n\n"
+    "Main ek all-in-one bot hun — Music, Admin, Fun sab kuch!\n\n"
+    "**Module select karo neeche se** 👇"
 )
 
 
@@ -268,15 +260,17 @@ HELP_TEXT = (
 
 @Client.on_message(filters.command(["start"]) & filters.private)
 async def start_private(client: Client, message: Message):
+    global _bot_username
     user_id  = message.from_user.id
     username = message.from_user.username or "User"
     name     = message.from_user.first_name or "User"
 
-    await register_user(
-        user_id,
-        username,
-        name,
-    )
+    await register_user(user_id, username, name)
+
+    # Cache bot username once
+    if _bot_username is None:
+        bot_me = await client.get_me()
+        _bot_username = bot_me.username
 
     # Must-join check
     if MUST_JOIN:
@@ -284,12 +278,13 @@ async def start_private(client: Client, message: Message):
             await client.get_chat_member(MUST_JOIN, user_id)
         except Exception:
             await message.reply(
-                f"**⚠️ Pehle join karo!**\n\n"
-                f"Bot use karne ke liye pehle hamara channel join karna zaroori hai:\n\n"
+                f"**⚠️ Pehle Join Karo!**\n\n"
+                f"━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Bot use karne ke liye pehle hamara channel join karna zaroori hai!\n\n"
                 f"👉 **[Join Channel](https://t.me/{MUST_JOIN})**\n\n"
                 f"_Join karo phir /start karo!_",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{MUST_JOIN}"),
+                    InlineKeyboardButton("📢 Join Channel ✅", url=f"https://t.me/{MUST_JOIN}"),
                 ]]),
                 disable_web_page_preview=True,
             )
@@ -303,45 +298,48 @@ async def start_private(client: Client, message: Message):
         reward = random.randint(FIRST_START_MIN, FIRST_START_MAX)
         await add_balance(user_id, reward)
         reward_text = (
-            f"\n\n💰 **Welcome Bonus: `${reward:,}`** 🎉\n"
-            f"_Pehli baar aa rahe ho — ye lo ek gift!_"
+            f"\n\n┌─── 🎁 **Welcome Bonus** ───┐\n"
+            f"│  💰 **`${reward:,}`** credited!\n"
+            f"└──────────────────────┘\n"
+            f"> _Pehli baar aa rahe ho — ye lo ek tohfa!_ 🎊"
         )
     else:
         bal = await get_balance(user_id)
-        reward_text = f"\n\n💳 **Your Balance: `${bal:,}`**"
+        reward_text = f"\n\n💳 **Your Wallet:** `${bal:,}`"
 
     total_users  = await get_total_users()
     total_chats  = await get_total_chats()
     quote        = random.choice(MOTIVATIONAL_QUOTES)
 
-    bot_me = await client.get_me()
     await message.reply(
-        f"**🎵 Namaste, {name}!** 👋\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"Main hun **{BOT_NAME}**\n"
-        f"_Telegram ka Ultimate All-in-One Bot!_\n\n"
-        f"**✨ Features:**\n"
-        f"🎵 Music + Video streaming · HD quality\n"
-        f"👮 Full group management suite\n"
-        f"🛡️ Anti-spam · GBAN · Word filter\n"
-        f"🎮 Economy · Games · AI Chat\n"
-        f"📝 Notes · Stats · Broadcast\n"
+        f"**🎵 Namaste, {name}!** 👋\n\n"
+        f"┌─────────────────────────┐\n"
+        f"│  **{BOT_NAME}**\n"
+        f"│  _{BOT_VERSION}_\n"
+        f"└─────────────────────────┘\n\n"
+        f"Main hun Telegram ka sabse badiya **All-in-One Bot!** 🔥\n\n"
+        f"**✨ Ye sab kar sakta hun:**\n"
+        f"╠ 🎵 Music + Video streaming (HD quality)\n"
+        f"╠ 👮 Full group management tools\n"
+        f"╠ 🛡️ Anti-spam, GBAN, Word filter\n"
+        f"╠ 🎮 Economy, Games + AI Chat\n"
+        f"╚ 📝 Notes, Stats, Broadcast\n"
         f"{reward_text}\n\n"
-        f"**📊 Live Stats:**\n"
-        f"> 👥 Users: **`{total_users:,}`**\n"
-        f"> 💬 Groups: **`{total_chats:,}`**\n"
-        f"> ⏱️ Uptime: `{uptime_str()}`\n\n"
-        f"**💬 Quote:**\n"
+        f"**📊 Network Stats:**\n"
+        f"> 👥 Users: `{total_users:,}` | 💬 Groups: `{total_chats:,}`\n\n"
+        f"**💬 Quote of the Day:**\n"
         f"> _{quote}_\n\n"
         f"_Apne group mein add karo aur enjoy karo!_ 🚀",
         reply_markup=InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("➕ Group mein Add", url=f"https://t.me/{bot_me.username}?startgroup=start"),
-                InlineKeyboardButton("❓ Commands", callback_data="help_main"),
+                InlineKeyboardButton("➕ Group mein Add Karo", url=f"https://t.me/{_bot_username}?startgroup=start"),
             ],
             [
-                InlineKeyboardButton("🔗 Support Chat", url=SUPPORT_CHAT),
-                InlineKeyboardButton(f"👑 @{OWNER_USERNAME}", url=f"https://t.me/{OWNER_USERNAME}"),
+                InlineKeyboardButton("❓ Help & Commands", callback_data="help_main"),
+                InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
+            ],
+            [
+                InlineKeyboardButton(f"👑 Owner: @{OWNER_USERNAME}", url=f"https://t.me/{OWNER_USERNAME}"),
             ],
         ]),
         disable_web_page_preview=True,
@@ -366,13 +364,13 @@ async def start_private(client: Client, message: Message):
 async def start_group(client: Client, message: Message):
     await register_chat(message.chat.id, message.chat.title, "group")
     await message.reply(
-        f"**🎵 {BOT_NAME}** — Online Hoon! 🔥\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"**▶️ Quick Start:**\n"
-        f"• `/play <song>` — Music shuru karo\n"
-        f"• `/vplay <song>` — 1080p Video play karo\n"
-        f"• `/help` — Sab commands dekho\n\n"
-        f"> 💡 _DM mein `/start` karo Economy join ke liye!_",
+        f"**🎵 {BOT_NAME}** is Online! 🔥\n\n"
+        f"╔══════════════════════╗\n"
+        f"║  Ready to Rock! 🎸   ║\n"
+        f"╚══════════════════════╝\n\n"
+        f"• `/play <song>` — Music shuru karo 🎵\n"
+        f"• `/help` — Sab commands dekho 📖\n\n"
+        f"_DM mein /start karo economy join karne ke liye!_ 💰",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton("❓ Help & Commands", callback_data="help_main"),
             InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
@@ -438,57 +436,102 @@ async def cb_noop(client, cq):
 
 @Client.on_message(filters.command(["ping"]))
 async def ping_cmd(client: Client, message: Message):
-    start = time.monotonic()
-    msg   = await message.reply("🏓 _Pinging..._")
-    delay = (time.monotonic() - start) * 1000
-    quality = "🟢 Excellent" if delay < 100 else "🟡 Good" if delay < 300 else "🔴 Slow"
+    start  = time.monotonic()
+    msg    = await message.reply("🏓 Pinging...")
+    delay  = (time.monotonic() - start) * 1000
     await msg.edit(
-        f"**🏓 Pong!**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⚡ **Ping:** `{delay:.1f}ms` {quality}\n"
-        f"⏱️ **Uptime:** `{uptime_str()}`\n"
-        f"📦 **Version:** `{BOT_NAME}`\n"
-        f"🐍 **Python:** 3.12\n"
-        f"🔥 **Status:** Online ✅"
+        f"**🏓 Pong!**\n\n"
+        f"⚡ Ping: `{delay:.1f}ms`\n"
+        f"⏱️ Uptime: `{uptime_str()}`\n"
+        f"📦 Version: `{BOT_VERSION}`"
     )
 
 
 # ── /about ────────────────────────────────────────────────────────
 
-@Client.on_message(filters.command(["about", "info"]))
+@Client.on_message(filters.command(["about"]))
 async def about_cmd(client: Client, message: Message):
     bot_me = await client.get_me()
     total_users = await get_total_users()
     total_chats = await get_total_chats()
     await message.reply(
-        f"**🎵 {BOT_NAME}**\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🤖 **Bot:** @{bot_me.username}\n"
-        f"👑 **Owner:** @{OWNER_USERNAME}\n"
-        f"📦 **Version:** `{BOT_NAME}`\n"
-        f"🐍 **Language:** Python 3.12\n"
-        f"📚 **Framework:** Pyrofork + PyTgCalls\n\n"
-        f"**📊 Live Stats:**\n"
+        f"**🎵 {BOT_NAME}**\n\n"
+        f"> 🤖 Bot: @{bot_me.username}\n"
+        f"> 👑 Owner: @{OWNER_USERNAME}\n"
+        f"> 📦 Version: `{BOT_VERSION}`\n"
+        f"> 🐍 Language: Python 3.12\n"
+        f"> 📚 Framework: Pyrofork + PyTgCalls\n"
         f"> ⏱️ Uptime: `{uptime_str()}`\n"
-        f"> 👥 Users: **`{total_users:,}`**\n"
-        f"> 💬 Groups: **`{total_chats:,}`**\n\n"
+        f"> 👥 Users: `{total_users:,}`\n"
+        f"> 💬 Groups: `{total_chats:,}`\n\n"
         f"**📡 Features:**\n"
-        f"🎵 Music/Video streaming · HD Quality\n"
-        f"👮 Complete Group management\n"
-        f"🛡️ Anti-spam · GBAN · Protection\n"
-        f"🎮 Economy · Games · Fun\n"
-        f"🤖 AI Chatbot · Auto-reactions\n",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔗 Support Chat", url=SUPPORT_CHAT),
-                InlineKeyboardButton(f"👑 @{OWNER_USERNAME}", url=f"https://t.me/{OWNER_USERNAME}"),
-            ],
-            [
-                InlineKeyboardButton("❓ Help / Commands", callback_data="help_main"),
-            ]
-        ]),
+        f"> 🎵 Music/Video streaming\n"
+        f"> 👮 Group management\n"
+        f"> 🛡️ Anti-spam & GBAN\n"
+        f"> 🎮 Economy & Games\n"
+        f"> 🤖 AI Chatbot\n",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
+            InlineKeyboardButton("👤 Owner", url=f"https://t.me/{OWNER_USERNAME}"),
+        ]]),
         disable_web_page_preview=True,
     )
+
+
+# ── /whois / /info @user ──────────────────────────────────────────
+
+@Client.on_message(filters.command(["whois", "info"]))
+async def whois_cmd(client: Client, message: Message):
+    """Full user info — reply or @username/ID."""
+    # Resolve target
+    if message.reply_to_message and message.reply_to_message.from_user:
+        user = message.reply_to_message.from_user
+    elif len(message.command) > 1:
+        try:
+            user = await client.get_users(message.command[1])
+        except Exception as e:
+            return await message.reply(f"❌ User nahi mila: `{e}`")
+    else:
+        user = message.from_user
+
+    if not user:
+        return await message.reply("❌ User nahi mila. Reply karo ya @username dein.")
+
+    # Fetch extra DB info
+    db_info     = await get_user_info(user.id)
+    name_hist   = await get_name_history(user.id)
+    common_chats = await get_common_chats_count(user.id)
+
+    first_seen_str = ""
+    if db_info and db_info.get("first_seen"):
+        import datetime
+        dt = datetime.datetime.utcfromtimestamp(db_info["first_seen"])
+        first_seen_str = dt.strftime("%d %b %Y")
+
+    lines = [
+        f"👤 **User Info**\n",
+        f"🏷️ **Name:** {user.mention}",
+        f"🆔 **ID:** `{user.id}`",
+    ]
+    if user.username:
+        lines.append(f"📛 **Username:** @{user.username}")
+    if user.is_bot:
+        lines.append("🤖 **Type:** Bot")
+    if user.is_premium:
+        lines.append("⭐ **Premium:** Yes")
+    if first_seen_str:
+        lines.append(f"📅 **First Seen:** {first_seen_str}")
+    if common_chats:
+        lines.append(f"💬 **Common Chats:** `{common_chats}`")
+
+    if name_hist and len(name_hist) > 1:
+        lines.append(f"\n**📜 Name History (last {min(len(name_hist),5)}):**")
+        for name, ts in name_hist[:5]:
+            import datetime
+            dt = datetime.datetime.utcfromtimestamp(ts)
+            lines.append(f"  • `{name}` — _{dt.strftime('%d %b %Y')}_")
+
+    await message.reply("\n".join(lines))
 
 
 # ── /id ───────────────────────────────────────────────────────────

@@ -97,7 +97,9 @@ async def topusers_cmd(client: Client, message: Message):
         lines.append(f"{medal} **{name}** — `{cnt:,}` ({pct:.1f}%)")
 
     lines.append(f"\n💬 **Total:** `{total:,}` messages+media")
-    lines.append(f"\n⚠️ _Spam karoge toh 5 min ke liye rank se ban!_")
+    # BUG FIX: removed misleading line "Spam karoge toh 5 min ke liye rank se ban" —
+    # spam_rank_ban only records a temporary DB flag; it doesn't remove users from rankings.
+    lines.append(f"\n💡 _Zyada message karo ranking mein upar jao!_ 🚀")
 
     await message.reply("\n".join(lines), reply_markup=InlineKeyboardMarkup([[
         InlineKeyboardButton("🔄 Refresh", callback_data="stats_top"),

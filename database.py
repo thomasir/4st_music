@@ -121,6 +121,15 @@ async def init_db():
             PRIMARY KEY(requester_id, target_id)
         );
         """)
+        # ── Schema migrations (safe — ignore if column already exists) ──
+        migrations = [
+            "ALTER TABLE economy ADD COLUMN daily_last INTEGER DEFAULT 0",
+        ]
+        for sql in migrations:
+            try:
+                await db.execute(sql)
+            except Exception:
+                pass  # Column already exists — safe to ignore
         await db.commit()
     log.info("✅ Database initialised")
 
@@ -710,3 +719,79 @@ async def get_all_users_ids() -> list:
     async with aiosqlite.connect(DB) as db:
         async with db.execute("SELECT user_id FROM users") as cur:
             return [r[0] for r in await cur.fetchall()]
+
+
+# ══ DAILY REWARD ══════════════════════════════════════════════════
+
+async def get_daily_last(user_id: int) -> int:
+    """Returns Unix timestamp of last daily claim (0 if never)."""
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute(
+            "SELECT daily_last FROM economy WHERE user_id=?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row and row[0] else 0
+
+
+async def set_daily_last(user_id: int, ts: int):
+    """Update daily_last timestamp — also ensures row exists."""
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT INTO economy (user_id, balance, total_earned, started, daily_last) VALUES (?,0,0,0,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET daily_last=?",
+            (user_id, ts, ts)
+        )
+        await db.commit()
+
+
+# ══ MARRIAGE ══════════════════════════════════════════════════════
+
+async def init_marriage_table():
+    """Called lazily — creates marriages table if not present."""
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS marriages (
+                user_id    INTEGER PRIMARY KEY,
+                partner_id INTEGER NOT NULL,
+                married_at INTEGER DEFAULT (strftime('%s','now'))
+            )
+        """)
+        await db.commit()
+
+
+async def get_partner(user_id: int) -> int | None:
+    await init_marriage_table()
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute(
+            "SELECT partner_id FROM marriages WHERE user_id=?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def marry_users(user1_id: int, user2_id: int):
+    await init_marriage_table()
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO marriages (user_id, partner_id) VALUES (?,?)",
+            (user1_id, user2_id)
+        )
+        await db.execute(
+            "INSERT OR REPLACE INTO marriages (user_id, partner_id) VALUES (?,?)",
+            (user2_id, user1_id)
+        )
+        await db.commit()
+
+
+async def divorce_user(user_id: int):
+    await init_marriage_table()
+    async with aiosqlite.connect(DB) as db:
+        # Remove both sides
+        async with db.execute(
+            "SELECT partner_id FROM marriages WHERE user_id=?", (user_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        if row:
+            await db.execute("DELETE FROM marriages WHERE user_id=?", (row[0],))
+        await db.execute("DELETE FROM marriages WHERE user_id=?", (user_id,))
+        await db.commit()

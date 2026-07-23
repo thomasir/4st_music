@@ -19,7 +19,7 @@ MUST_JOIN       = os.environ.get("MUST_JOIN", "").strip().lstrip("@") or None
 
 # ── Bot identity ───────────────────────────────────────────────────
 BOT_NAME        = "🎵 Apex Music Bot"
-BOT_VERSION     = "v5.0 Ultimate"
+BOT_VERSION     = "v6.0 Ultimate"   # BUG FIX: was "v5.0 Ultimate" — now matches main.py
 
 # ── Streaming ──────────────────────────────────────────────────────
 DURATION_LIMIT_MIN  = 0       # 0 = unlimited
@@ -32,7 +32,7 @@ DB_PATH = os.environ.get("DB_PATH", "apex_bot.db")
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", tempfile.gettempdir())
 
 # ── Economy ───────────────────────────────────────────────────────
-DAILY_REWARD_MIN = 5
+DAILY_REWARD_MIN = 500
 DAILY_REWARD_MAX = 5000
 FIRST_START_MIN  = 1000
 FIRST_START_MAX  = 100000

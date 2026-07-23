@@ -12,6 +12,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, ChatPermissions
 from pyrogram.errors import UserAdminInvalid
 from config import SUDO_USERS
+from database import spam_rank_ban
 
 # chat_id -> {user_id -> [timestamps]}
 _flood: dict[int, dict[int, list]] = defaultdict(lambda: defaultdict(list))
@@ -102,6 +103,8 @@ async def flood_check(client: Client, message: Message):
             await message.reply(
                 f"⚠️ {message.from_user.mention} **flood karne par {FLOOD_MUTE}s ke liye mute!**"
             )
+            # BUG FIX: Record spam strike in DB (spam_rank_ban was imported but never called)
+            await spam_rank_ban(message.chat.id, message.from_user.id, minutes=1)
             # Unmute in background — handler returns immediately
             asyncio.create_task(
                 _do_unmute(client, message.chat.id, message.from_user.id, FLOOD_MUTE)

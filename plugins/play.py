@@ -104,10 +104,11 @@ async def _get_asst_id() -> int:
     return _asst_id
 
 
-# ── Volume + lock stores ──────────────────────────────────────────
+# ── Volume + lock + paused state stores ──────────────────────────
 _volumes:    dict[int, int]         = {}
 _play_locks: dict[int, asyncio.Lock] = {}
 _np_msgs:    dict[int, any]         = {}   # store last NP message per chat
+_paused:     dict[int, bool]        = {}   # BUG FIX: track paused state per chat
 
 
 def _get_lock(chat_id: int) -> asyncio.Lock:
@@ -508,6 +509,15 @@ async def pause_cmd(client: Client, message: Message):
         return
     try:
         await call_py.pause(chat_id)
+        _paused[chat_id] = True   # BUG FIX: track paused state
+        # Update NP card if it exists
+        np_msg = _np_msgs.get(chat_id)
+        if np_msg:
+            asyncio.create_task(_safe_edit(
+                np_msg,
+                np_card_text(current, chat_id),
+                now_playing_buttons(current.webpage_url or "", paused=True, queue_count=queue_size(chat_id))
+            ))
         r = await client.send_message(
             chat_id,
             f"⏸️ **Paused!**\n\n"
@@ -538,6 +548,15 @@ async def resume_cmd(client: Client, message: Message):
         return
     try:
         await call_py.resume(chat_id)
+        _paused[chat_id] = False   # BUG FIX: clear paused state on resume
+        # Update NP card if it exists
+        np_msg = _np_msgs.get(chat_id)
+        if np_msg:
+            asyncio.create_task(_safe_edit(
+                np_msg,
+                np_card_text(current, chat_id),
+                now_playing_buttons(current.webpage_url or "", paused=False, queue_count=queue_size(chat_id))
+            ))
         r = await client.send_message(
             chat_id,
             f"▶️ **Resumed!**\n\n🎶 _{current.title}_",
@@ -717,6 +736,7 @@ async def np_cmd(client: Client, message: Message):
     np_text = np_card_text(current, chat_id)
     buttons  = now_playing_buttons(
         current.webpage_url or "",
+        paused=_paused.get(chat_id, False),   # BUG FIX: show correct ▶️/⏸️ based on actual state
         queue_count=queue_size(chat_id)
     )
 

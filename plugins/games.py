@@ -1,7 +1,13 @@
 """
-games.py — v5.0 Ultimate
-Economy: $ system (kill, rob, revive, protection, leaderboard, transfer)
+games.py — v6.0 Ultimate
+Economy: $ system (kill, rob, revive, protection, leaderboard, transfer, daily)
+Social: marry, divorce, slap, fight
 Classic: truth, dare, wyr, trivia
+BUG FIXES:
+  - /daily command added (was missing — help menu mentioned it)
+  - /marry, /divorce, /slap, /fight added (were missing — help menu mentioned them)
+  - trivia asyncio.sleep(10) moved to create_task (was blocking event loop for 10s)
+  - remove_balance return value not checked in kill/rob — now handled properly
 """
 
 import random
@@ -13,9 +19,11 @@ from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
     get_balance, add_balance, remove_balance, set_balance, transfer_balance,
     get_top_rich, is_protected, set_protection, get_protection_until,
-    has_started, init_economy, spam_rank_ban
+    has_started, init_economy, spam_rank_ban,
+    get_daily_last, set_daily_last,
+    get_partner, marry_users, divorce_user
 )
-from config import OWNER_ID
+from config import OWNER_ID, DAILY_REWARD_MIN, DAILY_REWARD_MAX
 
 # ══════════════════════════════════════════════════════
 # ── CLASSIC GAMES DATA
@@ -86,6 +94,11 @@ TRIVIA = [
 
 _active_trivia: dict[int, str] = {}
 
+# Marriage proposals pending confirmation
+_pending_proposals: dict[int, tuple[int, int]] = {}  # chat_id -> (proposer_id, target_id)
+
+DAILY_COOLDOWN = 86400  # 24 hours in seconds
+
 
 # ══════════════════════════════════════════════════════
 # ── CLASSIC GAME COMMANDS
@@ -128,18 +141,31 @@ async def wyr_cmd(client: Client, message: Message):
     )
 
 
+async def _trivia_timeout(chat_id: int, answer: str, reply_func):
+    """BUG FIX: asyncio.sleep moved to background task so handler isn't blocked for 10s."""
+    await asyncio.sleep(10)
+    if chat_id in _active_trivia:
+        del _active_trivia[chat_id]
+        try:
+            await reply_func(f"⏰ **Time's up!** Answer tha: **{answer}**")
+        except Exception:
+            pass
+
+
 @Client.on_message(filters.command(["trivia", "quiz"]) & filters.group)
 async def trivia_cmd(client: Client, message: Message):
+    if message.chat.id in _active_trivia:
+        return await message.reply("⚠️ Pehle wala trivia abhi chal raha hai! Jaldi answer do! 🧠")
     item = random.choice(TRIVIA)
     _active_trivia[message.chat.id] = item["a"].lower()
-    await message.reply(
+    sent = await message.reply(
         f"🧠 **Trivia Question:**\n\n{item['q']}\n\n"
         f"_10 seconds mein answer karein!_"
     )
-    await asyncio.sleep(10)
-    if message.chat.id in _active_trivia:
-        del _active_trivia[message.chat.id]
-        await message.reply(f"⏰ **Time's up!** Answer tha: **{item['a']}**")
+    # BUG FIX: create_task so this doesn't block the handler for 10s
+    asyncio.create_task(
+        _trivia_timeout(message.chat.id, item["a"], sent.reply)
+    )
 
 
 @Client.on_message(filters.group & ~filters.command([]))
@@ -200,10 +226,73 @@ async def balance_cmd(client: Client, message: Message):
             "Bot ko DM mein `/start` karo pehle 💰"
         )
     bal = await get_balance(user.id)
+    # Show partner info if married
+    partner_id = await get_partner(user.id)
+    partner_text = ""
+    if partner_id:
+        try:
+            partner = await client.get_users(partner_id)
+            partner_text = f"\n💍 **Partner:** {partner.mention}"
+        except Exception:
+            pass
     await message.reply(
         f"💰 **Wallet — {user.first_name}**\n\n"
-        f"💵 Balance: **{_fmt(bal)}**\n\n"
-        f"_/kill /rob /protect /transfer se khelein!_"
+        f"💵 Balance: **{_fmt(bal)}**"
+        f"{partner_text}\n\n"
+        f"_/kill /rob /protect /transfer /daily se khelein!_"
+    )
+
+
+@Client.on_message(filters.command(["daily"]) & filters.private)
+async def daily_cmd_private(client: Client, message: Message):
+    """Daily reward — works in both private and group."""
+    await _process_daily(client, message)
+
+
+@Client.on_message(filters.command(["daily"]) & filters.group)
+async def daily_cmd_group(client: Client, message: Message):
+    await _process_daily(client, message)
+
+
+async def _process_daily(client: Client, message: Message):
+    """BUG FIX: /daily was missing entirely — now implemented with 24h cooldown."""
+    user = message.from_user
+    if not user:
+        return
+
+    if not await has_started(user.id):
+        return await message.reply(
+            "❌ **Tumne bot start nahi kiya!**\n\n"
+            "Bot ko DM mein `/start` karo pehle 💰"
+        )
+
+    now = int(time.time())
+    last = await get_daily_last(user.id)
+    elapsed = now - last
+    cooldown = DAILY_COOLDOWN
+
+    if elapsed < cooldown:
+        remaining = cooldown - elapsed
+        h, rem = divmod(remaining, 3600)
+        m, s   = divmod(rem, 60)
+        return await message.reply(
+            f"⏳ **Daily reward already liya!**\n\n"
+            f"Next reward in: `{h}h {m}m {s}s`\n\n"
+            f"_Roz ek baar hi milta hai!_ 📅"
+        )
+
+    reward = random.randint(DAILY_REWARD_MIN, DAILY_REWARD_MAX)
+    await add_balance(user.id, reward)
+    await set_daily_last(user.id, now)
+    bal = await get_balance(user.id)
+
+    # Streak would require extra DB column — keep simple for now
+    await message.reply(
+        f"🎁 **Daily Reward Claimed!**\n\n"
+        f"👤 {user.mention}\n"
+        f"💵 Reward: **{_fmt(reward)}** credited!\n"
+        f"💳 New Balance: **{_fmt(bal)}**\n\n"
+        f"_Kal phir aana!_ 📅"
     )
 
 
@@ -224,7 +313,6 @@ async def kill_cmd(client: Client, message: Message):
     if victim.is_bot:
         return await message.reply("🤖 Bot ko kill nahi kar sakte!")
 
-    # Check protection
     if await is_protected(message.chat.id, victim.id):
         until = await get_protection_until(message.chat.id, victim.id)
         remaining = max(0, int((until - time.time()) / 60))
@@ -233,7 +321,6 @@ async def kill_cmd(client: Client, message: Message):
             f"⏳ Aur {remaining} minute baad try karo."
         )
 
-    # Steal 10-40% of victim's balance
     victim_bal = await get_balance(victim.id)
     if victim_bal <= 0:
         return await message.reply(f"💸 {victim.mention} ke paas kuch nahi hai lootne ke liye!")
@@ -251,14 +338,20 @@ async def kill_cmd(client: Client, message: Message):
     action = random.choice(kills)
 
     if success:
-        await remove_balance(victim.id, steal_amt)
-        await add_balance(attacker.id, steal_amt)
-        await message.reply(
-            f"{action}\n\n"
-            f"✅ **Kill Successful!**\n"
-            f"💰 Loota: **{_fmt(steal_amt)}** ({steal_pct}%)\n"
-            f"🏆 {attacker.mention} ka naya balance: **{_fmt(await get_balance(attacker.id))}**"
-        )
+        removed = await remove_balance(victim.id, steal_amt)
+        if removed:
+            await add_balance(attacker.id, steal_amt)
+            await message.reply(
+                f"{action}\n\n"
+                f"✅ **Kill Successful!**\n"
+                f"💰 Loota: **{_fmt(steal_amt)}** ({steal_pct}%)\n"
+                f"🏆 {attacker.mention} ka naya balance: **{_fmt(await get_balance(attacker.id))}**"
+            )
+        else:
+            await message.reply(
+                f"{action}\n\n"
+                f"😅 **Kill nearly succeeded but victim's balance changed!** Try again!"
+            )
     else:
         penalty = random.randint(20, 100)
         await remove_balance(attacker.id, penalty)
@@ -287,7 +380,6 @@ async def rob_cmd(client: Client, message: Message):
     if victim.is_bot:
         return await message.reply("🤖 Bot ko rob nahi kar sakte!")
 
-    # Check protection
     if await is_protected(message.chat.id, victim.id):
         until = await get_protection_until(message.chat.id, victim.id)
         remaining = max(0, int((until - time.time()) / 60))
@@ -304,15 +396,18 @@ async def rob_cmd(client: Client, message: Message):
     success   = random.random() < 0.55  # 55% success
 
     if success:
-        await remove_balance(victim.id, steal_amt)
-        await add_balance(robber.id, steal_amt)
-        rob_gifs = ["🕵️", "🦹", "💰", "🎭"]
-        await message.reply(
-            f"{random.choice(rob_gifs)} **Rob Successful!**\n\n"
-            f"🎯 {robber.mention} ne {victim.mention} ko loot liya!\n"
-            f"💵 Mila: **{_fmt(steal_amt)}**\n"
-            f"🏦 Tera balance: **{_fmt(await get_balance(robber.id))}**"
-        )
+        removed = await remove_balance(victim.id, steal_amt)
+        if removed:
+            await add_balance(robber.id, steal_amt)
+            rob_gifs = ["🕵️", "🦹", "💰", "🎭"]
+            await message.reply(
+                f"{random.choice(rob_gifs)} **Rob Successful!**\n\n"
+                f"🎯 {robber.mention} ne {victim.mention} ko loot liya!\n"
+                f"💵 Mila: **{_fmt(steal_amt)}**\n"
+                f"🏦 Tera balance: **{_fmt(await get_balance(robber.id))}**"
+            )
+        else:
+            await message.reply(f"😅 Rob fail — victim ka balance change ho gaya!")
     else:
         penalty = random.randint(30, 150)
         await remove_balance(robber.id, penalty)
@@ -345,7 +440,9 @@ async def revive_cmd(client: Client, message: Message):
             f"_Pehle thoda kamao!_"
         )
 
-    await remove_balance(user.id, cost)
+    if not await remove_balance(user.id, cost):
+        return await message.reply(f"❌ Insufficient balance! Cost: {_fmt(cost)}")
+
     heal = random.randint(100, 500)
     await add_balance(target_user.id, heal)
     await message.reply(
@@ -374,7 +471,9 @@ async def protect_cmd(client: Client, message: Message):
             f"💰 Tumhara balance: {_fmt(bal)}"
         )
 
-    await remove_balance(user.id, cost)
+    if not await remove_balance(user.id, cost):
+        return await message.reply(f"❌ Insufficient balance! Cost: {_fmt(cost)}")
+
     hours = 4
     await set_protection(message.chat.id, target_user.id, hours)
     await message.reply(
@@ -454,6 +553,193 @@ async def richlist_cmd(client: Client, message: Message):
         lines.append(f"{medal} **{name}** — {_fmt(bal)}")
 
     await message.reply("\n".join(lines))
+
+
+# ══════════════════════════════════════════════════════
+# ── SOCIAL COMMANDS (were missing — added in v6.0)
+# ══════════════════════════════════════════════════════
+
+SLAP_TEXTS = [
+    "👋 {a} ne {b} ko ek zabardast thappad maara! THAPAK! 😵",
+    "🤚 {a} ka haath {b} ke gaal pe landing kar gaya! BAAAAP! 😂",
+    "💥 {a} ne {b} ko ek flying slap maara — {b} chakkar khaa ke gir gaya! 🌀",
+    "😤 {a} ne {b} ko slap kiya — thappad ki goonj poori group mein sunai di! CRACK! 💢",
+    "🐟 {a} ne {b} ko ek badi si machhli se maara! Ye kya ho gaya?! 🤣",
+    "👋 THAP! {a} ne {b} ko zero warning ke saath thappad maar diya! 😱",
+]
+
+FIGHT_TEXTS = [
+    ("🥊 {a} ne {b} ko LEFT HOOK maara!", "💪 {a} ne {b} ko KO kar diya! Winner: **{a}**"),
+    ("⚔️ {a} aur {b} ki fight shuru!", "🏆 Intense fight ke baad **{a}** jeet gaya! {b} bhag gaya!"),
+    ("🥋 {a} ne {b} ko karate kick maari!", "🎖️ {a} ka upper cut {b} pe laga — {a} wins!"),
+    ("💥 {a} aur {b} ka showdown!", "🌟 **{a}** ne strategy se {b} ko defeat kiya!"),
+]
+
+
+@Client.on_message(filters.command(["slap"]) & filters.group)
+async def slap_cmd(client: Client, message: Message):
+    """BUG FIX: Was missing — help menu had /slap."""
+    slapper = message.from_user
+    if not slapper:
+        return
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        return await message.reply("❌ Kisi user ko reply karo /slap karne ke liye! 👋")
+
+    victim = message.reply_to_message.from_user
+    if victim.id == slapper.id:
+        return await message.reply("😂 Khud ko slap?! Therapy lo bhai!")
+    if victim.is_bot:
+        return await message.reply("🤖 Bot ko slap? Mujhe dard nahi hota! 😄")
+
+    text = random.choice(SLAP_TEXTS).format(
+        a=slapper.mention, b=victim.mention
+    )
+    await message.reply(
+        f"{text}\n\n"
+        f"😵 {victim.mention} — health: 💔💔💔"
+    )
+
+
+@Client.on_message(filters.command(["fight"]) & filters.group)
+async def fight_cmd(client: Client, message: Message):
+    """BUG FIX: Was missing — help menu had /fight."""
+    challenger = message.from_user
+    if not challenger:
+        return
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        return await message.reply("❌ Kisi user ko reply karo /fight karne ke liye! 🥊")
+
+    opponent = message.reply_to_message.from_user
+    if opponent.id == challenger.id:
+        return await message.reply("😂 Khud se fight? Therapy lo bhai!")
+    if opponent.is_bot:
+        return await message.reply("🤖 Main toh bot hun — tum haaroge! 😈")
+
+    # Random winner
+    winner, loser = (challenger, opponent) if random.random() < 0.5 else (opponent, challenger)
+    intro, result = random.choice(FIGHT_TEXTS)
+
+    reward = random.randint(50, 300)
+    await add_balance(winner.id, reward)
+
+    await message.reply(
+        f"{intro.format(a=challenger.mention, b=opponent.mention)}\n\n"
+        f"_{result.format(a=winner.mention, b=loser.mention)}_\n\n"
+        f"🏆 **{winner.first_name}** ko `+${reward}` prize milega!"
+    )
+
+
+@Client.on_message(filters.command(["marry"]) & filters.group)
+async def marry_cmd(client: Client, message: Message):
+    """BUG FIX: Was missing — help menu had /marry."""
+    proposer = message.from_user
+    if not proposer:
+        return
+
+    if not await has_started(proposer.id):
+        return await message.reply("❌ Pehle bot ko DM mein `/start` karo!")
+
+    if not message.reply_to_message or not message.reply_to_message.from_user:
+        return await message.reply("❌ Kisi user ko reply karo proposal bhejne ke liye! 💍")
+
+    target = message.reply_to_message.from_user
+    if target.id == proposer.id:
+        return await message.reply("😂 Khud se shaadi?! Lonely ho gaye kya? 💔")
+    if target.is_bot:
+        return await message.reply("🤖 Bot se shaadi?! Main already busy hun 😅")
+
+    # Check if already married
+    my_partner = await get_partner(proposer.id)
+    if my_partner:
+        try:
+            p = await client.get_users(my_partner)
+            return await message.reply(
+                f"💍 Tum already {p.mention} se shaadi-shuda ho!\n"
+                f"Pehle `/divorce` karo!"
+            )
+        except Exception:
+            pass
+
+    their_partner = await get_partner(target.id)
+    if their_partner:
+        return await message.reply(f"💔 {target.mention} already kisi aur se shaadi-shuda hai!")
+
+    # Store pending proposal
+    _pending_proposals[message.chat.id] = (proposer.id, target.id)
+
+    await message.reply(
+        f"💍 **Marriage Proposal!**\n\n"
+        f"💌 {proposer.mention} ne {target.mention} ko propose kiya!\n\n"
+        f"_{target.mention}_ — `/accept` karo agree karne ke liye\n"
+        f"ya `/reject` karo mana karne ke liye! ⏳",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ Accept", callback_data=f"marry_accept_{proposer.id}_{target.id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"marry_reject_{proposer.id}_{target.id}"),
+        ]])
+    )
+
+
+@Client.on_callback_query(filters.regex(r"^marry_(accept|reject)_(\d+)_(\d+)$"))
+async def marry_callback(client, cq):
+    action     = cq.data.split("_")[1]
+    proposer_id = int(cq.data.split("_")[2])
+    target_id   = int(cq.data.split("_")[3])
+
+    # Only the target can accept/reject
+    if cq.from_user.id != target_id:
+        return await cq.answer("Yeh proposal tumhare liye nahi hai! 😅", show_alert=True)
+
+    await cq.answer()
+    if action == "accept":
+        await marry_users(proposer_id, target_id)
+        try:
+            proposer = await client.get_users(proposer_id)
+            target   = await client.get_users(target_id)
+            await cq.message.edit(
+                f"💍 **Shaadi Ho Gayi!** 🎊\n\n"
+                f"👫 {proposer.mention} ❤️ {target.mention}\n\n"
+                f"_Congratulations! Dono ko mubarak ho!_ 🥳🎉"
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            proposer = await client.get_users(proposer_id)
+            target   = await client.get_users(target_id)
+            await cq.message.edit(
+                f"💔 **Proposal Reject Ho Gaya!**\n\n"
+                f"{target.mention} ne {proposer.mention} ka proposal thukra diya!\n\n"
+                f"_Dil toot gaya bhai..._ 😢"
+            )
+        except Exception:
+            pass
+
+
+@Client.on_message(filters.command(["divorce"]) & filters.group)
+async def divorce_cmd(client: Client, message: Message):
+    """BUG FIX: Was missing — help menu had /divorce."""
+    user = message.from_user
+    if not user:
+        return
+
+    partner_id = await get_partner(user.id)
+    if not partner_id:
+        return await message.reply(
+            "❌ Tum abhi single ho!\n_Pehle kisi se `/marry` karo!_ 💍"
+        )
+
+    try:
+        partner = await client.get_users(partner_id)
+        partner_name = partner.mention
+    except Exception:
+        partner_name = str(partner_id)
+
+    await divorce_user(user.id)
+    await message.reply(
+        f"💔 **Divorce Complete!**\n\n"
+        f"😢 {user.mention} aur {partner_name} ab alag ho gaye hain.\n\n"
+        f"_Zindagi aage badti hai..._ 🌸"
+    )
 
 
 # ══════════════════════════════════════════════════════

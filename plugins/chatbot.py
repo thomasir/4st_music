@@ -1,9 +1,10 @@
 """
-chatbot.py — v5.0
+chatbot.py — v5.1
 /chatbot on | /chatbot off
 Learns from user conversations and replies intelligently.
 Built-in responses + learns from chat.
 Reply to bot message = teach it (trigger → response)
+BUG FIX: Removed duplicate `import random` inside functions (was already imported at top)
 """
 
 import random
@@ -42,6 +43,8 @@ BUILTIN = {
     "sad": ["Aw, mat rona! 🥺 Main yahan hun. Kuch sunao.", "Sab theek ho jayega! 💙"],
     "happy": ["Yayy! 🎉 Khushi mein main bhi khush! 😄", "Great vibes! 🌟"],
     "winner": ["🏆 You're a winner!", "Congrats! 🎉🏆"],
+    "daily": ["Apna daily reward lena na bhoolo! /daily try karo! 💰", "/daily se roz paise milte hain! 🤑"],
+    "paise": ["Economy ka maza lo! /balance dekho aur /kill /rob try karo! 💵", "/daily karo paise kamao! 💰"],
 }
 
 
@@ -92,7 +95,7 @@ async def chatbot_handler(client: Client, message: Message):
             trigger = message.reply_to_message.text
             if trigger and message.text:
                 await learn_response(trigger[:200], message.text[:500])
-                # Don't reply, just silently learn
+                # Silently learn — don't reply here
 
         # Check if bot is mentioned or replied to
         bot_me = await client.get_me()
@@ -106,8 +109,7 @@ async def chatbot_handler(client: Client, message: Message):
 
         if not is_mentioned and not text_has_mention:
             # Random 1 in 10 chance to reply in chatbot-enabled groups
-            import random
-            if random.random() > 0.1:
+            if random.random() > 0.1:   # BUG FIX: removed duplicate `import random`
                 return
 
         text = message.text.strip()
@@ -129,9 +131,10 @@ async def chatbot_handler(client: Client, message: Message):
                 "Achha! Main seekh raha hun 🤖",
                 "Bhai ek dum sahi point! 👍",
                 "Mujhe aur sikhao! 📚",
+                "Waah! 👏 Zabardast baat boli!",
+                "Haan haan, bilkul! 😄",
             ]
-            import random
-            response = random.choice(fallbacks)
+            response = random.choice(fallbacks)  # BUG FIX: removed duplicate `import random`
 
         await message.reply(response)
     except Exception as e:

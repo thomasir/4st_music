@@ -1,13 +1,29 @@
 """
-filter_words.py — v4.0
+filter_words.py — v4.1
 Word filter: auto-delete messages containing banned words
+BUG FIX: asyncio.sleep directly in handler replaced with create_task
+          (blocking handler was delaying all other message processing)
 """
 
+import asyncio
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from helpers.decorators import admin_only
 from database import add_filter, remove_filter, get_filters
 from config import SUDO_USERS
+
+
+async def _warn_and_cleanup(client, chat_id: int, mention: str):
+    """Background: send filter warning and auto-delete after 5s."""
+    try:
+        warn_msg = await client.send_message(
+            chat_id,
+            f"⚠️ {mention} ne banned word use kiya. Message delete!"
+        )
+        await asyncio.sleep(5)
+        await warn_msg.delete()
+    except Exception:
+        pass
 
 
 @Client.on_message(filters.group & filters.text, group=2)
@@ -33,12 +49,9 @@ async def check_filters(client: Client, message: Message):
         if word in text_lower:
             try:
                 await message.delete()
-                warn_msg = await message.reply(
-                    f"⚠️ {message.from_user.mention} ne banned word use kiya. Message delete!"
-                )
-                import asyncio
-                await asyncio.sleep(5)
-                await warn_msg.delete()
+                mention = message.from_user.mention
+                # BUG FIX: use create_task so handler returns immediately
+                asyncio.create_task(_warn_and_cleanup(client, message.chat.id, mention))
             except Exception:
                 pass
             return
