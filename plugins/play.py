@@ -308,10 +308,13 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
         buttons  = now_playing_buttons(song.webpage_url or "", queue_count=q)
 
         sent_np = None
+        deleted_status = False   # BUG FIX: track whether status_msg was deleted
+
         # Try sending with thumbnail photo
         if song.thumbnail:
             try:
                 await _safe_delete(status_msg)
+                deleted_status = True
                 sent_np = await bot.send_photo(
                     chat_id,
                     photo=song.thumbnail,
@@ -322,8 +325,17 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
                 sent_np = None
 
         if not sent_np:
-            await _safe_edit(status_msg, np_text, buttons)
-            sent_np = status_msg
+            if deleted_status:
+                # status_msg was deleted — must send a fresh message, editing deleted
+                # message raises MessageIdInvalid which _safe_edit silently ignores,
+                # causing the user to see nothing (the original "no response" bug).
+                try:
+                    sent_np = await bot.send_message(chat_id, np_text, reply_markup=buttons)
+                except Exception:
+                    sent_np = status_msg   # last resort
+            else:
+                await _safe_edit(status_msg, np_text, buttons)
+                sent_np = status_msg
 
         _np_msgs[chat_id] = sent_np
 
@@ -350,6 +362,8 @@ async def _log_play(chat_id: int, song: Song):
 async def _play_command(client: Client, message: Message, is_video: bool = False):
     """Handle /play and /vplay."""
     query = " ".join(message.command[1:]).strip()
+    chat_id_early = message.chat.id
+    log.info("▶️ /play received | chat=%s | query=%r", chat_id_early, query[:60])
 
     # Delete user command instantly
     asyncio.create_task(_safe_delete(message))
