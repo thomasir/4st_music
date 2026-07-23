@@ -1,10 +1,10 @@
 """
-youtube.py — v6.1 (bug-fixed)
-✅ FIXED: extractor_args DASH/HLS skip hataya — bestaudio ab kaam karega
-✅ FIXED: asyncio.get_running_loop() (Python 3.10+ compatible)
-✅ FIXED: http_headers stream cache + search result mein add kiye
-✅ FIXED: get_stream() ab (url, dur, headers) return karta hai
+youtube.py — v7.0 Cookies-Only Mode
+✅ Cookies-only: YOUTUBE_COOKIES env var ya cookies/youtube.txt
+✅ No iOS / web_creator / custom player client — pure cookie auth
+✅ Standard Chrome User-Agent for compatibility
 ✅ Lazy cookie loading — bot crash fix
+✅ Stream + search cache (TTL 1h / 30min)
 """
 
 import os
@@ -104,19 +104,22 @@ def _opts(audio_only: bool = True, fmt: str | None = None) -> dict:
             "Heroku config mein YOUTUBE_COOKIES set karo."
         )
     default_fmt = "bestaudio/best" if audio_only else "bestvideo+bestaudio/best[height<=1080]/best"
+    # ── Cookies-only mode ────────────────────────────────────────
+    # Sirf cookies use karo — koi custom player_client nahi.
+    # YouTube cookies se authenticated requests hoti hain jo
+    # datacenter IPs pe bhi kaam karti hain bina iOS/web tricks ke.
     opts: dict = {
-        "format":      fmt or default_fmt,
-        "quiet":       True,
-        "no_warnings": True,
-        "noplaylist":  True,
-        "cookiefile":  cookie,
-        # FIX: Heroku/datacenter IPs pe YouTube 'web' player client block karta hai.
-        # 'ios' client nsig challenge use nahi karta → format restriction bypass hoti hai.
-        # 'web_creator' fallback rakha hai agar ios bhi na chale.
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["ios", "web_creator", "web"],
-            }
+        "format":         fmt or default_fmt,
+        "quiet":          True,
+        "no_warnings":    True,
+        "noplaylist":     True,
+        "cookiefile":     cookie,
+        "http_headers":   {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
         },
     }
     return opts

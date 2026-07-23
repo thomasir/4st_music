@@ -54,164 +54,177 @@ MODULES = [
     {
         "name": "🎵 Music",
         "desc": (
-            "**🎵 Music Module**\n\n"
-            "Telegram ka sabse fast music bot — Studio quality audio, 1080p video!\n\n"
-            "**▶️ Play Commands:**\n"
-            "• `/play <song/link>` — Audio play karo\n"
-            "• `/vplay <song/link>` — 1080p Video play karo\n"
-            "• `/playforce <song>` — ⚡ Instantly play (queue skip)\n\n"
+            "**🎵 Music Module**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "_Studio quality audio · 1080p Video · Cookies-powered_\n\n"
+            "**▶️ Play:**\n"
+            "`/play <song/link>` — 🎵 Audio play\n"
+            "`/vplay <song/link>` — 📺 1080p Video play\n"
+            "`/playforce <song>` — ⚡ Queue skip karke instantly play\n\n"
             "**🎛️ Controls:**\n"
-            "• `/pause` — Pause karo\n"
-            "• `/resume` — Resume karo\n"
-            "• `/skip` — Agli song pe jao\n"
-            "• `/stop` — Band karo + queue clear\n"
-            "• `/loop` — 🔁 Loop toggle\n"
-            "• `/shuffle` — 🔀 Queue shuffle\n\n"
-            "**📋 Info:**\n"
-            "• `/queue` — Queue dekho\n"
-            "• `/np` — Now Playing card\n"
-            "• `/vol 0-200` — Volume set karo\n\n"
-            "**💡 Tips:**\n"
-            "> Song ka naam ya YouTube link dono kaam karte hain!\n"
-            "> Buttons se bhi control kar sakte ho 🎛️\n"
-            "> `/vol 200` = maximum boost 🔥"
+            "`/pause` · `/resume` · `/skip` · `/stop`\n"
+            "`/loop` — 🔁 Loop ON/OFF\n"
+            "`/shuffle` — 🔀 Queue shuffle\n\n"
+            "**📋 Info & Volume:**\n"
+            "`/np` — Now Playing card 🎶\n"
+            "`/queue` — Queue list dekho 📋\n"
+            "`/vol 0-200` — Volume set karo 🔊\n\n"
+            "> 💡 Song naam ya YouTube link — dono kaam karte hain!\n"
+            "> 🎛️ Buttons se bhi sab controls milte hain\n"
+            "> 🔥 `/vol 200` = Maximum boost!"
         )
     },
     {
         "name": "👮 Admin",
         "desc": (
-            "**👮 Admin Module**\n\n"
-            "Complete group management — ek jagah sab kuch!\n\n"
-            "**🔨 Ban/Kick/Mute:**\n"
-            "• `/ban [user] [reason]` — Ban karo\n"
-            "• `/unban [user]` — Unban karo\n"
-            "• `/kick [user] [reason]` — Kick karo\n"
-            "• `/mute [user]` — Mute karo\n"
-            "• `/unmute [user]` — Unmute karo\n\n"
-            "**⭐ Promote/Demote:**\n"
-            "• `/promote [user] [title]` — Admin banao\n"
-            "• `/fpromote [user] [title]` — Full admin\n"
-            "• `/demote [user]` — Demote karo\n\n"
+            "**👮 Admin Module**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "_Complete group management — ek jagah sab kuch!_\n\n"
+            "**🔨 Ban / Kick / Mute:**\n"
+            "`/ban [user] [reason]` — Ban karo\n"
+            "`/unban [user]` — Unban karo\n"
+            "`/kick [user] [reason]` — Kick karo\n"
+            "`/mute [user]` — Mute karo\n"
+            "`/unmute [user]` — Unmute karo\n\n"
+            "**⭐ Promote / Demote:**\n"
+            "`/promote [user] [title]` — Limited admin\n"
+            "`/fpromote [user] [title]` — Full admin 👑\n"
+            "`/demote [user]` — Admin rights hatao\n\n"
             "**⚠️ Warn System:**\n"
-            "• `/warn [user] [reason]` — Warn do (3 = auto-ban!)\n"
-            "• `/warns [user]` — Warns dekho\n"
-            "• `/clearwarn [user]` — Warns clear karo\n\n"
-            "**📌 Other:**\n"
-            "• `/pin` — Message pin karo\n"
-            "• `/unpin` — Unpin karo\n"
-            "• `/purge` — Reply se ab tak delete\n"
-            "• `/admins` — Admin list\n"
-            "• `/report` — Admins ko report karo\n\n"
-            "> ⚠️ **Safety:** 10s mein 3+ bans → auto-demote!"
+            "`/warn [user] [reason]` — Warn do\n"
+            "`/warns [user]` — Warns history dekho\n"
+            "`/clearwarn [user]` — Warns clear karo\n"
+            "> 🔴🔴🔴 3 warns = auto-ban!\n\n"
+            "**📌 Messages:**\n"
+            "`/pin` — Pin karo · `/unpin` — Unpin\n"
+            "`/purge` — Reply se ab tak delete\n"
+            "`/admins` — Admin list dekho\n"
+            "`/report` — Admins ko report karo\n"
+            "`/banall` — Sab ban (owner only)\n\n"
+            "> ⚡ Safety: 10s mein 3+ bans → auto-demote!"
         )
     },
     {
         "name": "💰 Economy",
         "desc": (
-            "**💰 Economy & Games Module**\n\n"
-            "Virtual $ economy — earn, spend, compete!\n"
-            "Shuru karne ke liye bot ko DM mein `/start` karo!\n\n"
+            "**💰 Economy & Games Module**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "_Virtual $ economy — earn, spend, compete!_\n"
+            "_DM mein `/start` karo pehle!_\n\n"
             "**💵 Economy:**\n"
-            "• `/balance` — Wallet dekho\n"
-            "• `/daily` — Daily reward lo\n"
-            "• `/transfer @user amount` — Transfer karo\n"
-            "• `/richlist` — Top earners\n\n"
-            "**🎮 Games:**\n"
-            "• `/coinflip heads/tails amount` — Coin flip bet\n"
-            "• `/dice amount` — Dice roll bet\n"
-            "• `/slap @user` — Thappad maaro 😂\n"
-            "• `/fight @user` — Fight karo\n"
-            "• `/marry @user` — Shaadi karo 💍\n"
-            "• `/divorce` — Divorce karo 💔\n\n"
-            "> 💡 `/start` karo DM mein pehli baar ke liye reward milega!"
+            "`/balance` — 💳 Wallet dekho\n"
+            "`/daily` — 🎁 Daily reward lo\n"
+            "`/transfer @user amount` — 💸 Transfer karo\n"
+            "`/richlist` — 🏆 Top earners\n\n"
+            "**🎮 Economy Games:**\n"
+            "`/coinflip heads/tails <amount>` — 🪙 Bet lagao\n"
+            "`/dice <amount>` — 🎲 Dice bet\n\n"
+            "**⚔️ Social Games:**\n"
+            "`/slap @user` — 👋 Thappad maaro!\n"
+            "`/fight @user` — 🥊 Fight karo\n"
+            "`/marry @user` — 💍 Shaadi karo\n"
+            "`/divorce` — 💔 Divorce karo\n"
+            "`/kill @user` — ☠️ Kill attempt\n"
+            "`/rob @user` — 💰 Rob attempt\n\n"
+            "> 🛡️ `/protect` se kuch der ke liye safe raho!"
         )
     },
     {
         "name": "🛡️ Safety",
         "desc": (
-            "**🛡️ Safety & Protection Module**\n\n"
-            "Group ko safe rakhta hai — 24/7!\n\n"
-            "**🚫 Anti-Spam:**\n"
-            "• Auto-detect aur ban spam users\n"
-            "• Flood control — too many messages\n"
-            "• New join protection\n\n"
+            "**🛡️ Safety & Protection Module**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n"
+            "_Group ko 24/7 safe rakhta hai!_\n\n"
+            "**🚫 Anti-Spam (Auto):**\n"
+            "• Flood control — 7 msgs / 5s pe auto-mute (60s)\n"
+            "• Anti-raid — 10+ joins/30s pe group lock\n"
+            "• Auto unlocks after 5 minutes\n\n"
             "**🔞 Anti-Porn:**\n"
-            "• `/antiporn on/off` — Toggle (Admin)\n"
-            "• NSFW media auto-detect + delete\n\n"
-            "**🌍 Global Ban:**\n"
-            "• `/gban @user [reason]` — Global ban\n"
-            "• `/ungban @user` — Ungban\n"
-            "• `/gbans` — Total GBANs dekho\n\n"
+            "`/antiporn on` · `/antiporn off` — (Admin)\n"
+            "• NSFW media auto-detect + delete + warn\n\n"
+            "**🌍 Global Ban (GBAN):**\n"
+            "`/gban @user [reason]` — Global ban\n"
+            "`/ungban @user` — Global unban\n"
+            "`/gbans` — Total GBANs count\n"
+            "> 🤖 Gbanned users auto-ban on join!\n\n"
             "**🔤 Word Filter:**\n"
-            "• `/addfilter <word>` — Word filter add\n"
-            "• `/rmfilter <word>` — Filter remove\n"
-            "• `/filters` — All filters dekho\n\n"
-            "> 🤖 Bot auto-bans gbanned users on join!"
+            "`/addfilter <word>` — Filter add karo\n"
+            "`/rmfilter <word>` — Filter remove\n"
+            "`/filters` — All filters list\n\n"
+            "**😊 Auto Reactions:**\n"
+            "`/reaction on` · `/reaction off` — Toggle"
         )
     },
     {
         "name": "📝 Tools",
         "desc": (
-            "**📝 Tools & Utilities Module**\n\n"
+            "**📝 Tools & Utilities Module**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "**📌 Notes:**\n"
-            "• `/note <name> <content>` — Note save karo\n"
-            "• `/get <name>` — Note dekho\n"
-            "• `/notes` — All notes\n"
-            "• `/delnote <name>` — Delete note\n\n"
-            "**👋 Welcome:**\n"
-            "• `/setwelcome <text>` — Welcome msg set\n"
-            "• `/setgoodbye <text>` — Goodbye msg set\n"
-            "• `/welcome on/off` — Toggle\n\n"
+            "`/note <name> <content>` — Note save\n"
+            "`/get <name>` · `#notename` — Note dekho\n"
+            "`/notes` — All notes list\n"
+            "`/delnote <name>` — Note delete\n\n"
+            "**👋 Welcome / Goodbye:**\n"
+            "`/setwelcome <text>` — Welcome msg set\n"
+            "`/setgoodbye <text>` — Goodbye msg set\n"
+            "`/welcome on/off` · `/goodbye on/off`\n"
+            "`/resetwelcome` · `/resetgoodbye`\n"
+            "> Placeholders: `{mention}` `{name}` `{chat}` `{id}`\n\n"
             "**📊 Stats:**\n"
-            "• `/stats` — Group stats dekho\n"
-            "• `/topusers` — Top chatters\n"
-            "• `/topgroups` — Most active groups\n\n"
-            "**📢 Broadcast (Owner only):**\n"
-            "• `/broadcast <msg>` — Sab ko bhejo\n\n"
+            "`/stats` — Group message stats\n"
+            "`/topusers` — Top chatters 🏆\n"
+            "`/topgroups` — Most active groups 🌍\n\n"
             "**🔍 User Info:**\n"
-            "• `/id` — User ID dekho\n"
-            "• `/info @user` — User details\n"
-            "• `/whois @user` — Full info"
+            "`/id` — User/Chat ID\n"
+            "`/about` — Bot info\n"
+            "`/ping` — Bot speed check\n\n"
+            "**📢 Broadcast:**\n"
+            "`/broadcast <msg>` — Sab users ko bhejo _(Owner)_"
         )
     },
     {
         "name": "🎮 Fun",
         "desc": (
-            "**🎮 Fun & Entertainment Module**\n\n"
-            "**😂 Fun:**\n"
-            "• `/joke` — Random joke\n"
-            "• `/shayari` — Romantic shayari\n"
-            "• `/quote` — Motivational quote\n"
-            "• `/flip` — Coin flip\n"
-            "• `/dice` — Dice roll\n"
-            "• `/8ball <question>` — Magic 8ball\n\n"
+            "**🎮 Fun & Entertainment Module**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "**😂 Fun Commands:**\n"
+            "`/joke` — Random joke sunao 😂\n"
+            "`/shayari` — Romantic shayari 🌹\n"
+            "`/quote` — Motivational quote ✨\n"
+            "`/flip` — Coin flip 🪙\n"
+            "`/dice` — Dice roll 🎲\n"
+            "`/8ball <question>` — Magic 8-Ball 🎱\n\n"
+            "**🎭 Games:**\n"
+            "`/truth` — Truth question 🤔\n"
+            "`/dare` — Dare challenge 😈\n"
+            "`/wyr` — Would You Rather? 🤷\n"
+            "`/trivia` — Trivia question 🧠\n\n"
+            "**✏️ Name & DP:**\n"
+            "`/genname <name>` — Fancy fonts generate\n"
+            "`/gendp <name>` — Profile picture banao\n\n"
             "**🤖 AI Chatbot:**\n"
-            "• Group mein mention karo ya reply karo\n"
-            "• Bot seekhta hai aur respond karta hai\n"
-            "• `/chatbot on/off` — Toggle\n\n"
-            "**🏷️ TagAll:**\n"
-            "• `/tagall <msg>` — Sab ko tag karo\n"
-            "• `/tagadmins <msg>` — Admins ko tag\n\n"
-            "**😊 Reactions:**\n"
-            "• `/react on/off` — Auto reactions toggle\n\n"
-            "> 💡 `/chatbot on` karo aur bot se baat karo!"
+            "`/chatbot on/off` — Toggle AI replies\n"
+            "• Bot reply karo ya mention karo — AI jawab dega!\n\n"
+            "**🏷️ Tag:**\n"
+            "`/tagall [msg]` — Sab members tag\n"
+            "`/tagadmins [msg]` — Admins tag\n"
+            "`/ontag [msg]` — Same as tagall"
         )
     },
 ]
 
 def help_markup(page: int) -> InlineKeyboardMarkup:
-    total = len(MODULES)
     rows = []
     # Module buttons (2 per row)
     mod_btns = [
         InlineKeyboardButton(MODULES[i]["name"], callback_data=f"help_mod_{i}")
-        for i in range(total)
+        for i in range(len(MODULES))
     ]
     for i in range(0, len(mod_btns), 2):
         rows.append(mod_btns[i:i+2])
-    # Bottom nav
     rows.append([
-        InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
+        InlineKeyboardButton("🔗 Support Chat", url=SUPPORT_CHAT),
         InlineKeyboardButton("❌ Close", callback_data="help_close"),
     ])
     return InlineKeyboardMarkup(rows)
@@ -221,20 +234,31 @@ def module_markup(page: int) -> InlineKeyboardMarkup:
     total = len(MODULES)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"help_mod_{page-1}"))
-    nav.append(InlineKeyboardButton(f"📋 {page+1}/{total}", callback_data="noop"))
+        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"help_mod_{page-1}"))
+    nav.append(InlineKeyboardButton(f"📄 {page+1} / {total}", callback_data="noop"))
     if page < total - 1:
         nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"help_mod_{page+1}"))
     return InlineKeyboardMarkup([
         nav,
-        [InlineKeyboardButton("🏠 Main Menu", callback_data="help_main")],
+        [
+            InlineKeyboardButton("🏠 Main Menu", callback_data="help_main"),
+            InlineKeyboardButton("🔗 Support", url=SUPPORT_CHAT),
+        ],
     ])
 
 
 HELP_TEXT = (
-    f"**🎵 {BOT_NAME} — Help Menu**\n\n"
-    "Main ek all-in-one bot hun — Music, Admin, Fun sab kuch!\n\n"
-    "**Module select karo neeche se** 👇"
+    f"**🎵 {BOT_NAME}**\n"
+    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    f"🤖 _All-in-One Bot — Music · Admin · Fun · Economy_\n\n"
+    f"**📂 Modules:**\n"
+    f"🎵 Music — Play, Queue, Volume, Loop\n"
+    f"👮 Admin — Ban, Kick, Mute, Warn, Promote\n"
+    f"💰 Economy — Balance, Daily, Games\n"
+    f"🛡️ Safety — Anti-spam, GBAN, Filter\n"
+    f"📝 Tools — Notes, Welcome, Stats, Info\n"
+    f"🎮 Fun — Jokes, Games, AI Chat, Tag\n\n"
+    f"**👇 Neeche se module select karo:**"
 )
 
 
