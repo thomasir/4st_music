@@ -191,7 +191,7 @@ async def _leave_call(chat_id: int):
 async def _set_volume_bg(chat_id: int):
     vol = _volumes.get(chat_id, int(_VOL_EFFECTIVE * 20))
     try:
-        await call_py.change_volume(chat_id, vol)
+        await call_py.change_volume_call(chat_id, vol)
     except Exception:
         pass
 
@@ -247,15 +247,15 @@ async def _do_play(chat_id: int, song: Song, status_msg, is_video: bool = False)
             if is_video:
                 stream = MediaStream(
                     stream_url,
-                    audio_quality=AudioQuality.HIGH,
-                    video_quality=VideoQuality.FHD_1080p,
+                    audio_parameters=AudioQuality.HIGH,
+                    video_parameters=VideoQuality.FHD_1080p,
                     ffmpeg_parameters=_ffmpeg_params(),
                     headers=http_headers or None,
                 )
             else:
                 stream = MediaStream(
                     stream_url,
-                    audio_quality=AudioQuality.HIGH,
+                    audio_parameters=AudioQuality.HIGH,
                     ffmpeg_parameters=_ffmpeg_params(),
                     headers=http_headers or None,
                 )
