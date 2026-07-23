@@ -83,11 +83,25 @@ cookies/
 | `OWNER_USERNAME` | ⚪ | — |
 | `LOG_CHANNEL` | ⚪ | — |
 | `YOUTUBE_COOKIES` | ⚪ | — |
+| `YTDLP_PROXY` | ⚪ | — |
 | `VOLUME_BOOST` | ⚪ | `10.0` |
 
 > ⚠️ API credentials must only exist in deployment config vars. The old public
 > defaults have been removed. If those credentials were ever used, rotate the
 > Telegram API hash and bot token before deploying this version.
+
+### Optional YouTube proxy
+
+Only set `YTDLP_PROXY` when a working proxy is required. Use a complete URL:
+
+```text
+socks5://host:1080
+http://host:8080
+```
+
+Do not use values such as `1080socks5:` or `socks5://host:1080socks5:`. The
+bot now rejects malformed proxy values and connects directly instead, so a
+bad optional proxy cannot break `/play` search.
 
 ---
 

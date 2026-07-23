@@ -14,6 +14,7 @@ import aiohttp
 import logging
 import time
 import tempfile
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("ApexBot.youtube")
@@ -182,21 +183,77 @@ def _opts(
     if cookie:
         opts["cookiefile"] = cookie
     # YTDLP_PROXY: set in Heroku Config Vars to route yt-dlp through a proxy.
-    # Correct format: socks5://host:port  or  socks5://user:pass@host:port
-    #                 http://host:port    or  https://host:port
-    # Common mistake: writing "host:port socks5://" or "1080socks5://" etc.
-    proxy = os.environ.get("YTDLP_PROXY", "").strip()
-    if proxy:
-        _valid_schemes = ("socks5://", "socks4://", "http://", "https://")
-        if any(proxy.startswith(s) for s in _valid_schemes):
-            opts["proxy"] = proxy
-        else:
-            log.error(
-                f"❌ YTDLP_PROXY format galat hai: {proxy!r}\n"
-                f"   Sahi format: socks5://host:port  ya  http://host:port\n"
-                f"   Heroku Config Vars mein theek karo."
-            )
+    # Validate the complete URL, not just its prefix. A value such as
+    # ``socks5://host:1080socks5:`` starts with a valid scheme but makes the
+    # requests backend fail with "Port could not be cast to integer".
+    proxy = _proxy_from_environment()
+    if proxy is not None:
+        # An empty proxy explicitly disables inherited HTTP(S)_PROXY values.
+        opts["proxy"] = proxy
     return opts
+
+
+def _valid_proxy_url(value: str) -> str | None:
+    """Return a usable proxy URL, or None for a malformed value.
+
+    yt-dlp eventually hands this value to urllib3/requests, whose error for a
+    bad port is cryptic and otherwise aborts every search attempt. Validate it
+    here so a bad optional proxy can never take down playback.
+    """
+    value = value.strip()
+    if not value:
+        return ""
+
+    try:
+        parsed = urlsplit(value)
+        if parsed.scheme.lower() not in {
+            "http", "https", "socks4", "socks4a", "socks5", "socks5h"
+        }:
+            return None
+        if not parsed.hostname or parsed.port is None:
+            return None
+        if not 1 <= parsed.port <= 65535:
+            return None
+    except ValueError:
+        return None
+    return value
+
+
+def _proxy_from_environment() -> str | None:
+    """Read and validate the optional yt-dlp proxy configuration.
+
+    ``YTDLP_PROXY`` is the app-specific setting. If it is absent, leave valid
+    system proxy settings alone, but explicitly disable malformed inherited
+    values because requests may discover them automatically.
+    """
+    configured = os.environ.get("YTDLP_PROXY", "").strip()
+    if configured:
+        proxy = _valid_proxy_url(configured)
+        if proxy is None:
+            log.error(
+                "❌ YTDLP_PROXY invalid hai; direct connection use ho rahi hai. "
+                "Format: socks5://host:port ya http://host:port"
+            )
+            return ""
+        return proxy
+
+    for name in (
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        inherited = os.environ.get(name, "").strip()
+        if inherited and _valid_proxy_url(inherited) is None:
+            log.error(
+                "❌ Inherited proxy setting %s invalid hai; yt-dlp ke liye "
+                "direct connection use ho rahi hai.",
+                name,
+            )
+            return ""
+    return None
 
 
 # ── URL validation ────────────────────────────────────────────────
