@@ -770,28 +770,43 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
     fetches and re-serves the stream through its own server, so ntgcalls
     pulls audio from Invidious (not blocked) instead of YouTube CDN (blocked).
     """
-    api_timeout  = aiohttp.ClientTimeout(total=15, connect=6)
-    head_timeout = aiohttp.ClientTimeout(total=8,  connect=4)
+    # Metadata is optional: some instances disable /api/v1/videos while their
+    # media proxy still works. Keep these short so one dead instance cannot
+    # delay /play for the whole fallback list.
+    api_timeout = aiohttp.ClientTimeout(total=4, connect=2)
+    probe_timeout = aiohttp.ClientTimeout(total=6, connect=3)
 
     for instance in _INVIDIOUS_INSTANCES:
         try:
             # Step 1: get video metadata to find the best itag
             api_url = f"{instance}/api/v1/videos/{video_id}"
             data: dict = {}
-            async with aiohttp.ClientSession(timeout=api_timeout) as session:
-                async with session.get(api_url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
-                    if resp.status == 200:
-                        data = await resp.json(content_type=None)
-                    else:
-                        log.debug(
-                            f"Invidious {instance} metadata → HTTP {resp.status}; "
-                            "trying known itags"
-                        )
+            try:
+                async with aiohttp.ClientSession(timeout=api_timeout) as session:
+                    async with session.get(
+                        api_url,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json(content_type=None)
+                        else:
+                            log.debug(
+                                f"Invidious {instance} metadata → HTTP {resp.status}; "
+                                "trying known itags"
+                            )
+            except Exception as e:
+                log.debug(
+                    f"Invidious {instance} metadata unavailable ({e}); "
+                    "trying known itags"
+                )
 
             duration = int(data.get("lengthSeconds", 0) or 0)
             itags: list[int] = []
 
             if audio_only:
+                # Try stable audio itags even when the metadata endpoint is
+                # disabled. 251 is Opus/WebM; 140 is AAC/M4A.
+                itags.extend(_INVIDIOUS_AUDIO_ITAGS)
                 # adaptiveFormats has separate audio streams
                 adaptive = data.get("adaptiveFormats") or []
                 audio_fmts = [
@@ -805,10 +820,8 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                             key=lambda f: int(f.get("bitrate", 0) or 0),
                         )["itag"])
                     )
-                # API-disabled instances still commonly support these
-                # progressive proxy routes.
-                itags.extend(_INVIDIOUS_AUDIO_ITAGS)
             else:
+                itags.extend((18, 22))
                 # formatStreams has muxed (video+audio) progressive formats
                 fmt_streams = data.get("formatStreams") or []
                 video_fmts = [
@@ -822,27 +835,35 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                         except ValueError:
                             return 0
                     itags.append(int(max(video_fmts, key=_res)["itag"]))
-                itags.extend((18, 22))
 
             if not itags:
                 log.debug(f"Invidious {instance} — no itag found in response")
                 continue
 
             # Step 2: build/check proxied stream URLs. local=true makes
-            # Invidious re-serve the media instead of redirecting to the
-            # blocked googlevideo.com CDN.
+            # Invidious re-serve the media. These endpoints normally return a
+            # 302 to the instance's companion host; that redirect is the
+            # healthy response, not an HTML error.
             for itag in dict.fromkeys(itags):
                 su = (
                     f"{instance}/latest_version?"
                     f"id={video_id}&itag={itag}&local=true"
                 )
                 try:
-                    async with aiohttp.ClientSession(timeout=head_timeout) as s:
+                    async with aiohttp.ClientSession(timeout=probe_timeout) as s:
                         async with s.get(
                             su,
-                            headers={"Range": "bytes=0-0"},
-                            allow_redirects=True,
+                            headers={"User-Agent": "Mozilla/5.0"},
+                            allow_redirects=False,
                         ) as r:
+                            if r.status in (301, 302, 303, 307, 308):
+                                redirected = r.headers.get("Location", "")
+                                if redirected:
+                                    log.info(
+                                        f"✅ Invidious proxy redirect OK | "
+                                        f"{instance} | {video_id} | itag={itag}"
+                                    )
+                                    return redirected, duration
                             if r.status not in (200, 206):
                                 log.debug(
                                     f"Invidious proxy {instance} itag={itag} "
@@ -856,11 +877,11 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                                     f"returned {ct or 'unknown content'}"
                                 )
                                 continue
-                    log.info(
-                        f"✅ Invidious proxy OK | {instance} | "
-                        f"{video_id} | itag={itag}"
-                    )
-                    return su, duration
+                            log.info(
+                                f"✅ Invidious proxy OK | {instance} | "
+                                f"{video_id} | itag={itag}"
+                            )
+                            return su, duration
                 except Exception as e:
                     log.debug(
                         f"Invidious proxy check failed "
