@@ -119,22 +119,29 @@ def _resolve_cookie_file() -> str | None:
 
 
 # ── yt-dlp options ───────────────────────────────────────────────
-def _opts(audio_only: bool = True, fmt: str | None = None) -> dict:
+def _opts(audio_only: bool = True, fmt: str | None = None, player_client: list | None = None) -> dict:
     cookie = _resolve_cookie_file()
     default_fmt = (
-        "bestaudio[ext=m4a]/bestaudio/best"
+        "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"
         if audio_only
-        else "best[height<=720][vcodec!=none][acodec!=none]/best"
+        else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=480]/best"
     )
-    # ── Cookies-only mode ────────────────────────────────────────
-    # Sirf cookies use karo — koi custom player_client nahi.
-    # YouTube cookies se authenticated requests hoti hain jo
-    # datacenter IPs pe bhi kaam karti hain bina iOS/web tricks ke.
+    # ── Mobile player clients ────────────────────────────────────
+    # Datacenter IPs (Heroku, Railway, etc.) pe YouTube web client
+    # format extraction block karta hai → "Requested format is not available".
+    # iOS/Android/mweb clients alag API endpoints use karte hain jo
+    # datacenter IPs pe bhi kaam karte hain bina cookies ke.
+    clients = player_client or ["ios", "android", "mweb", "web"]
     opts: dict = {
         "format":         fmt or default_fmt,
         "quiet":          True,
         "no_warnings":    True,
         "noplaylist":     True,
+        "extractor_args": {
+            "youtube": {
+                "player_client": clients,
+            }
+        },
         "http_headers":   {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -213,31 +220,46 @@ def _pick_url(info: dict, audio_only: bool) -> str:
 
 
 def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
-    # Try formats in order — stop at first success.
-    # "Requested format is not available" → next format; any other error → give up.
-    formats = (
-        ["bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", "bestaudio/best", "best"]
-        if audio_only else
-        [
-            "bestvideo[height<=720]+bestaudio/best[height<=720]/best",
-            "bestvideo[height<=480]+bestaudio/best[height<=480]/best",
-            "best",
+    # Try formats + player_client combos in order — stop at first success.
+    # Root cause of "All formats exhausted": YouTube datacenter IP blocks web
+    # player client. Mobile clients (ios/android) use different endpoints.
+    if audio_only:
+        format_client_combos = [
+            # Mobile clients first — these bypass datacenter IP restrictions
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["ios", "android", "mweb"]),
+            ("bestaudio/best",                                    ["ios", "android", "mweb"]),
+            # Fallback: web client with loose format
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["web"]),
+            ("bestaudio/best",                                    ["web"]),
+            # Last resort: any format, any client
+            ("best",                                              ["ios", "android", "mweb", "web"]),
         ]
-    )
-    for fmt in formats:
+    else:
+        format_client_combos = [
+            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["ios", "android", "mweb"]),
+            ("bestvideo[height<=480]+bestaudio/best[height<=480]/best", ["ios", "android", "mweb"]),
+            ("bestvideo[height<=720]+bestaudio/best[height<=720]/best", ["web"]),
+            ("best[height<=720]/best",                                  ["ios", "android", "mweb", "web"]),
+            ("best",                                                     ["ios", "android", "mweb", "web"]),
+        ]
+
+    for fmt, clients in format_client_combos:
         try:
-            with yt_dlp.YoutubeDL(_opts(audio_only, fmt=fmt)) as ydl:
+            with yt_dlp.YoutubeDL(_opts(audio_only, fmt=fmt, player_client=clients)) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
-                    log.debug(f"yt-dlp format={fmt!r} succeeded for {url[:60]}")
+                    log.debug(f"yt-dlp format={fmt!r} clients={clients} succeeded for {url[:60]}")
                     return info
         except yt_dlp.utils.DownloadError as e:
             err = str(e)
             if (
                 "Requested format is not available" in err
                 or "format is not available" in err.lower()
+                or "No video formats found" in err
+                or "Sign in to confirm" in err
+                or "This video is not available" in err
             ):
-                log.warning(f"Format {fmt!r} not available, retrying with next…")
+                log.warning(f"Format {fmt!r} clients={clients} not available, retrying with next…")
                 continue
             log.error(f"yt-dlp download error: {e}")
             return None
