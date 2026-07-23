@@ -17,7 +17,7 @@ import tempfile
 import json
 import shutil
 import urllib.request
-from urllib.parse import quote_plus, urlsplit
+from urllib.parse import quote_plus, urljoin, urlsplit
 from concurrent.futures import ThreadPoolExecutor
 
 log = logging.getLogger("ApexBot.youtube")
@@ -770,127 +770,89 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
     fetches and re-serves the stream through its own server, so ntgcalls
     pulls audio from Invidious (not blocked) instead of YouTube CDN (blocked).
     """
-    # Metadata is optional: some instances disable /api/v1/videos while their
-    # media proxy still works. Keep these short so one dead instance cannot
-    # delay /play for the whole fallback list.
-    api_timeout = aiohttp.ClientTimeout(total=4, connect=2)
-    probe_timeout = aiohttp.ClientTimeout(total=6, connect=3)
+    # Metadata endpoints are frequently disabled, while /latest_version still
+    # works. Probe known itags directly and probe all instances concurrently;
+    # serially waiting on dead public instances was adding 40–60 seconds.
+    itags = _INVIDIOUS_AUDIO_ITAGS if audio_only else (18, 22)
+    timeout = aiohttp.ClientTimeout(total=7, connect=2)
+    headers = {"User-Agent": "Mozilla/5.0"}
 
-    for instance in _INVIDIOUS_INSTANCES:
-        try:
-            # Step 1: get video metadata to find the best itag
-            api_url = f"{instance}/api/v1/videos/{video_id}"
-            data: dict = {}
-            try:
-                async with aiohttp.ClientSession(timeout=api_timeout) as session:
-                    async with session.get(
-                        api_url,
-                        headers={"User-Agent": "Mozilla/5.0"},
-                    ) as resp:
-                        if resp.status == 200:
-                            data = await resp.json(content_type=None)
-                        else:
-                            log.debug(
-                                f"Invidious {instance} metadata → HTTP {resp.status}; "
-                                "trying known itags"
-                            )
-            except Exception as e:
-                log.debug(
-                    f"Invidious {instance} metadata unavailable ({e}); "
-                    "trying known itags"
-                )
-
-            duration = int(data.get("lengthSeconds", 0) or 0)
-            itags: list[int] = []
-
-            if audio_only:
-                # Try stable audio itags even when the metadata endpoint is
-                # disabled. 251 is Opus/WebM; 140 is AAC/M4A.
-                itags.extend(_INVIDIOUS_AUDIO_ITAGS)
-                # adaptiveFormats has separate audio streams
-                adaptive = data.get("adaptiveFormats") or []
-                audio_fmts = [
-                    f for f in adaptive
-                    if f.get("type", "").startswith("audio/") and f.get("itag")
-                ]
-                if audio_fmts:
-                    itags.append(
-                        int(max(
-                            audio_fmts,
-                            key=lambda f: int(f.get("bitrate", 0) or 0),
-                        )["itag"])
-                    )
-            else:
-                itags.extend((18, 22))
-                # formatStreams has muxed (video+audio) progressive formats
-                fmt_streams = data.get("formatStreams") or []
-                video_fmts = [
-                    f for f in fmt_streams
-                    if f.get("type", "").startswith("video/") and f.get("itag")
-                ]
-                if video_fmts:
-                    def _res(f):
-                        try:
-                            return int((f.get("resolution") or "0p").rstrip("p"))
-                        except ValueError:
-                            return 0
-                    itags.append(int(max(video_fmts, key=_res)["itag"]))
-
-            if not itags:
-                log.debug(f"Invidious {instance} — no itag found in response")
-                continue
-
-            # Step 2: build/check proxied stream URLs. local=true makes
-            # Invidious re-serve the media. These endpoints normally return a
-            # 302 to the instance's companion host; that redirect is the
-            # healthy response, not an HTML error.
-            for itag in dict.fromkeys(itags):
-                su = (
-                    f"{instance}/latest_version?"
-                    f"id={video_id}&itag={itag}&local=true"
-                )
+    async def _probe(instance: str) -> tuple[str, int] | None:
+        for itag in itags:
+            current = (
+                f"{instance}/latest_version?"
+                f"id={video_id}&itag={itag}&local=true"
+            )
+            # Follow only the small redirect chain. Do not let aiohttp drain a
+            # multi-megabyte media response just to validate the URL.
+            for _ in range(4):
                 try:
-                    async with aiohttp.ClientSession(timeout=probe_timeout) as s:
-                        async with s.get(
-                            su,
-                            headers={"User-Agent": "Mozilla/5.0"},
-                            allow_redirects=False,
-                        ) as r:
-                            if r.status in (301, 302, 303, 307, 308):
-                                redirected = r.headers.get("Location", "")
-                                if redirected:
-                                    log.info(
-                                        f"✅ Invidious proxy redirect OK | "
-                                        f"{instance} | {video_id} | itag={itag}"
-                                    )
-                                    return redirected, duration
-                            if r.status not in (200, 206):
-                                log.debug(
-                                    f"Invidious proxy {instance} itag={itag} "
-                                    f"→ HTTP {r.status}"
-                                )
-                                continue
-                            ct = r.headers.get("Content-Type", "").lower()
-                            if "text/html" in ct or "application/json" in ct:
-                                log.debug(
-                                    f"Invidious proxy {instance} itag={itag} "
-                                    f"returned {ct or 'unknown content'}"
-                                )
-                                continue
-                            log.info(
-                                f"✅ Invidious proxy OK | {instance} | "
-                                f"{video_id} | itag={itag}"
-                            )
-                            return su, duration
+                    async with session.get(
+                        current,
+                        headers=headers,
+                        allow_redirects=False,
+                    ) as response:
+                        if response.status in (301, 302, 303, 307, 308):
+                            location = response.headers.get("Location", "")
+                            if not location:
+                                break
+                            current = urljoin(current, location)
+                            continue
+
+                        if response.status not in (200, 206):
+                            break
+
+                        content_type = response.headers.get(
+                            "Content-Type", ""
+                        ).lower()
+                        if (
+                            "text/html" in content_type
+                            or "application/json" in content_type
+                            or not content_type
+                        ):
+                            break
+
+                        log.info(
+                            f"✅ Invidious proxy OK | {instance} | "
+                            f"{video_id} | itag={itag} | hops<=4"
+                        )
+                        return current, 0
                 except Exception as e:
                     log.debug(
-                        f"Invidious proxy check failed "
+                        f"Invidious probe failed "
                         f"({instance}, itag={itag}): {e}"
                     )
+                    break
+        return None
 
-        except Exception as e:
-            log.debug(f"Invidious {instance} error: {e}")
-            continue
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        tasks = {
+            asyncio.create_task(_probe(instance))
+            for instance in _INVIDIOUS_INSTANCES
+        }
+        try:
+            pending = tasks
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in done:
+                    try:
+                        result = task.result()
+                    except Exception as e:
+                        log.debug(f"Invidious worker failed: {e}")
+                        continue
+                    if result:
+                        for other in pending:
+                            other.cancel()
+                        await asyncio.gather(*pending, return_exceptions=True)
+                        return result
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     log.error(f"❌ All Invidious instances failed for {video_id}")
     return None

@@ -391,10 +391,23 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                 stream_url,
                 audio_parameters=AudioQuality.HIGH,
                 video_parameters=VideoQuality.HD_720p if is_video else VideoQuality.SD_360p,
+                # An audio URL must not be probed as a video source. That
+                # extra ffmpeg probe can hang after the assistant joins VC.
+                video_flags=(
+                    MediaStream.Flags.AUTO_DETECT
+                    if is_video else MediaStream.Flags.IGNORE
+                ),
                 ffmpeg_parameters=_ffmpeg_params(),
                 headers=http_headers if http_headers else None,
             )
-            await call_py.play(chat_id, stream)
+            log.info(
+                "▶️ Starting voice playback | chat=%s | video=%s | source=%s",
+                chat_id,
+                is_video,
+                stream_url[:100],
+            )
+            await asyncio.wait_for(call_py.play(chat_id, stream), timeout=25.0)
+            log.info("✅ Voice playback started | chat=%s | title=%s", chat_id, song.title[:80])
 
         except NoActiveGroupCall:
             set_current(chat_id, None)
@@ -403,6 +416,17 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                 status_msg,
                 "❌ **Voice Chat band hai!**\n\n"
                 "Group Settings → Voice Chats → **Start** karo pehle,\nphir `/play` dobara karo. 🎵"
+            )
+            return
+        except asyncio.TimeoutError:
+            set_current(chat_id, None)
+            await _leave_call(chat_id)
+            log.error("⏱️ Voice playback start timed out in chat %s", chat_id)
+            await _safe_edit(
+                status_msg,
+                "⏱️ **Stream start nahi ho paya.**\n\n"
+                "Voice Chat connect hua tha, lekin audio source respond nahi kar raha. "
+                "Dobara `/play` try karo. 🎵",
             )
             return
         except (ChannelInvalid, ChatAdminRequired, UserNotParticipant) as e:
