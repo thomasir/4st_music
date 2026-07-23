@@ -224,54 +224,50 @@ def _pick_url(info: dict, audio_only: bool) -> str:
 
 
 def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
-    """Try (format, clients, skip_cookies) combos in priority order.
+    """Try (format, clients) combos in priority order — always with cookies.
 
-    Key insight:
-    - Browser cookies are for YouTube WEB session → use with ["web"] client only.
-    - Mobile clients (ios/android/mweb) authenticate differently — mixing cookies
-      with them confuses YouTube and makes ALL formats appear unavailable.
-    - "ba/b" is yt-dlp shorthand (best-audio / best) — no ext filter, so it
-      accepts whatever codec the client returns rather than demanding m4a/webm.
+    When a cloud/Heroku IP is flagged by YouTube, ALL clients (web + mobile)
+    return "Sign in to confirm". yt-dlp extracts visitor_data + auth tokens
+    from the cookiefile and injects them into mobile API calls too — so
+    always pass cookies. Never skip them.
+
+    "ba/b" = yt-dlp shorthand: best-audio / best — no ext filter, accepts
+    any codec the client returns (more permissive than [ext=m4a]).
     """
     cookie = _resolve_cookie_file()
+    if not cookie:
+        log.warning(
+            "No YouTube cookies found! Cloud IPs require cookies. "
+            "Set YOUTUBE_COOKIES env var on Heroku (Netscape format). "
+            "See: https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies"
+        )
 
     if audio_only:
-        # tv_embedded is FIRST — it bypasses YouTube bot detection on cloud/datacenter IPs
-        # (Heroku, Railway, etc.) without requiring cookies or PO tokens.
-        combos: list[tuple[str, list, bool]] = [
-            ("ba/b",           ["tv_embedded"], True),
-            ("bestaudio/best", ["tv_embedded"], True),
-        ]
-        # Cookies + web client (if cookies available)
-        if cookie:
-            combos += [
-                ("ba/b",           ["web"], False),
-                ("bestaudio/best", ["web"], False),
-            ]
-        # Mobile clients as fallback
-        combos += [
-            ("ba/b",                                             ["ios"],            True),
-            ("ba/b",                                             ["android"],        True),
-            ("ba/b",                                             ["mweb"],           True),
-            ("bestaudio/best",                                   ["ios", "android"], True),
-            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["ios", "android", "mweb"], True),
-            # Last resort — all clients
-            ("ba/b",  ["tv_embedded", "ios", "android", "mweb", "web"], True),
-            ("best",  ["tv_embedded", "ios", "android", "mweb", "web"], True),
+        # tv_embedded FIRST — bypasses YouTube bot detection on cloud/Heroku IPs
+        # without cookies or PO tokens (embedded player uses a different auth path).
+        combos: list[tuple[str, list]] = [
+            ("ba/b",           ["tv_embedded"]),
+            ("bestaudio/best", ["tv_embedded"]),
+            ("ba/b",                                             ["web"]),
+            ("bestaudio/best",                                   ["web"]),
+            ("ba/b",                                             ["ios"]),
+            ("ba/b",                                             ["android"]),
+            ("ba/b",                                             ["mweb"]),
+            ("bestaudio/best",                                   ["ios", "android"]),
+            ("bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio", ["ios", "android", "mweb"]),
+            ("ba/b",  ["tv_embedded", "ios", "android", "mweb", "web"]),
+            ("best",  ["tv_embedded", "ios", "android", "mweb", "web"]),
         ]
     else:
-        # Video: prefer progressive (combined audio+video in one URL) to avoid DASH splits.
-        # DASH splits require two separate URLs which pytgcalls 2.x cannot handle natively.
-        cookie_combos: list[tuple[str, list, bool]] = ([
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["web"], False),
-        ] if cookie else [])
+        # Video: prefer progressive (combined audio+video, one URL) over DASH splits.
+        # DASH splits give two separate URLs which pytgcalls 2.x cannot handle natively.
         combos = [
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"], True),
-        ] + cookie_combos + [
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android", "mweb"], True),
-            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"], True),
-            ("best[height<=720]/best", ["tv_embedded", "ios", "android", "mweb", "web"], True),
-            ("best",                   ["tv_embedded", "ios", "android", "mweb", "web"], True),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["tv_embedded"]),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["web"]),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["ios", "android", "mweb"]),
+            ("best[height<=480][vcodec!=none][acodec!=none]/best[height<=480]/best", ["ios", "android", "mweb"]),
+            ("best[height<=720]/best", ["tv_embedded", "ios", "android", "mweb", "web"]),
+            ("best",                   ["tv_embedded", "ios", "android", "mweb", "web"]),
         ]
 
     _RETRYABLE = (
@@ -284,13 +280,13 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
         "HTTP Error 429",
     )
 
-    for fmt, clients, skip_ck in combos:
+    for fmt, clients in combos:
         try:
-            opts = _opts(audio_only, fmt=fmt, player_client=clients, skip_cookies=skip_ck)
+            opts = _opts(audio_only, fmt=fmt, player_client=clients, skip_cookies=False)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
-                    log.debug(f"yt-dlp fmt={fmt!r} clients={clients} skip_ck={skip_ck} OK: {url[:55]}")
+                    log.debug(f"yt-dlp fmt={fmt!r} clients={clients} OK: {url[:55]}")
                     return info
         except yt_dlp.utils.DownloadError as e:
             err = str(e)
@@ -304,7 +300,13 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
         except Exception as e:
             log.error(f"yt-dlp error: {e}")
             return None
+
     log.error(f"All formats exhausted for {url[:60]}")
+    if not cookie:
+        log.error(
+            "FIX: Export cookies from your browser (Chrome/Firefox) as Netscape format "
+            "and set them as YOUTUBE_COOKIES env var on Heroku."
+        )
     return None
 
 
