@@ -26,9 +26,10 @@ from pyrogram.types import (
 )
 from pytgcalls import PyTgCalls, filters as tgfilters
 from pytgcalls.types import MediaStream, AudioQuality, VideoQuality, StreamEnded
-# BUG FIX: AlreadyJoinedError py-tgcalls 2.x mein exist nahi karta — import hataaya.
-# Isko ab generic Exception + string check se handle kiya jaata hai _do_play() mein.
-from pytgcalls.exceptions import NoActiveGroupCall, NotInCallError
+# BUG FIX: AlreadyJoinedError aur NotInCallError py-tgcalls 2.x mein exist nahi karte — dono hataaye.
+# NotInCallError ka naam 2.x mein NotInGroupCall ho gaya, lekin yeh use nahi ho raha tha.
+# Generic Exception catch se handle ho raha hai _do_play() mein.
+from pytgcalls.exceptions import NoActiveGroupCall
 
 from clients import bot, assistant, call_py
 from helpers.queue import (
@@ -816,7 +817,7 @@ async def _auto_next(chat_id: int, song: Song):
         log.warning(f"_auto_next {chat_id}: {e}")
 
 
-@call_py.on_update(tgfilters.stream_end())
+@call_py.on_update(tgfilters.stream_ended())
 async def on_stream_end(client: PyTgCalls, update: StreamEnded):
     """Never await Telegram calls here — use create_task to prevent
     recursive MTProto update propagation (pytgcalls 2.x known issue)."""
