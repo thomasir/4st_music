@@ -98,15 +98,29 @@ def _resolve_cookie_file() -> str | None:
 # ── yt-dlp options ───────────────────────────────────────────────
 def _opts(audio_only: bool = True) -> dict:
     cookie = _resolve_cookie_file()
+    # FIX: bestaudio/best kuch videos pe "Requested format not available" deta tha.
+    # Reason: age-restricted ya region-locked videos mein audio-only DASH streams
+    # nahi hote. Long fallback chain use karo taaki koi na koi format mile.
+    audio_fmt = (
+        "bestaudio[ext=m4a]"
+        "/bestaudio[ext=webm]"
+        "/bestaudio[acodec!=none]"
+        "/bestaudio"
+        "/best[acodec!=none][height<=480]"
+        "/best[height<=480]"
+        "/best"
+    )
+    video_fmt = (
+        "bestvideo[height<=1080]+bestaudio"
+        "/best[height<=1080]"
+        "/best[height<=720]"
+        "/best"
+    )
     opts: dict = {
-        "format":      "bestaudio/best" if audio_only else "best[height<=1080]/best",
+        "format":      audio_fmt if audio_only else video_fmt,
         "quiet":       True,
         "no_warnings": True,
         "noplaylist":  True,
-        # BUG FIX: extractor_args hata diya jo DASH/HLS skip karta tha.
-        # YouTube ka bestaudio (format 140 m4a / 251 webm) DASH hai.
-        # Skip karne se sirf format 18 (360p) bachta tha jo bahut videos mein
-        # available nahi hota → empty stream_url → song play nahi hota.
     }
     if cookie:
         opts["cookiefile"] = cookie
