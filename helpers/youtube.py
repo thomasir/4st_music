@@ -61,15 +61,17 @@ _AUTH_ERRORS = (
 def _is_retriable(err: str) -> bool:
     return any(k in err.lower() for k in _AUTH_ERRORS)
 
-# Fast clients first — ios and android_vr are fastest
+# Client rotation — tv_embedded/android bypass bot checks best
+# web_creator removed (requires auth), added web_embedded as fallback
 _CLIENT_ROTATION = [
-    (["ios"],         True),
-    (["android_vr"],  True),
-    (["android"],     True),
-    (["web_creator"], True),
-    (["tv_embedded"], True),
-    (["android_vr"],  False),
-    (["mweb"],        False),
+    (["tv_embedded"],      True),
+    (["android"],          True),
+    (["ios"],              True),
+    (["android_vr"],       True),
+    (["web_embedded"],     True),
+    (["tv_embedded"],      False),
+    (["android"],          False),
+    (["mweb"],             False),
 ]
 
 # ── Stream cache (10h TTL) + search cache (30min TTL) ────────────
@@ -109,15 +111,23 @@ def _cache_search(query: str, info: dict):
 
 def _ydl_opts(clients: list, use_cookies: bool, audio_only: bool = True) -> dict:
     opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best" if audio_only else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        "format": "bestaudio/best" if audio_only else "bestvideo+bestaudio/best[ext=mp4]/best",
         "quiet": True,
         "no_warnings": True,
-        "socket_timeout": 3,
+        "socket_timeout": 8,
         "noplaylist": True,
         "concurrent_fragment_downloads": 4,
-        "extractor_args": {"youtube": {"player_client": clients}},
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_retries": 3,
+        "extractor_args": {
+            "youtube": {
+                "player_client": clients,
+                "player_skip": ["webpage", "configs", "js"],
+            }
+        },
         "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "User-Agent": "com.google.android.youtube/17.31.35 (Linux; U; Android 11) gzip",
         },
     }
     if use_cookies and _COOKIE_FILE:
