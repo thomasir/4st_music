@@ -757,27 +757,51 @@ async def get_stream(
     Get direct stream URL for playback.
     Returns (media_url, optional_audio_url, duration_secs, http_headers).
 
-    BUG FIX: ab 3-tuple return karta hai — headers bhi milte hain
-    taaki MediaStream ko pass kar sakein aur YouTube 403 se bache.
+    FIX: yt-dlp aur Invidious parallel chalate hain.
+    Invidious proxied URL prefer karo — Heroku/cloud IPs pe kaam karta hai.
+    yt-dlp direct CDN URL sirf fallback ke liye (googlevideo URLs cloud IPs
+    se block hoti hain → ntgcalls shell_reader EOF → 1-sec VC leave bug).
     """
     cached = None if force_refresh else _cached_stream(url, is_video)
     if cached:
         return cached
 
-    # BUG FIX: get_running_loop() — Python 3.10+ compatible
     loop = asyncio.get_running_loop()
-    info = await loop.run_in_executor(_exec, _extract_sync, url, not is_video)
+    vid_id = _extract_video_id(url)
+
+    # Parallel fetch: yt-dlp + Invidious dono ek saath chalao taaki latency
+    # minimum rahe. Invidious /latest_version?local=true proxied URL return
+    # karta hai jo Heroku/cloud IPs se bhi kaam karta hai. yt-dlp direct
+    # googlevideo CDN URL deta hai jo cloud IPs se block hoti hai.
+    ytdlp_task = loop.run_in_executor(_exec, _extract_sync, url, not is_video)
+    inv_task = (
+        _try_invidious(vid_id, not is_video)
+        if vid_id
+        else asyncio.sleep(0, result=None)
+    )
+
+    info_result, inv_result = await asyncio.gather(
+        ytdlp_task, inv_task, return_exceptions=True
+    )
+
+    # Invidious proxied URL prefer karo — cloud/Heroku IPs pe CDN block nahi hoti
+    if isinstance(inv_result, tuple) and inv_result:
+        su, dur = inv_result
+        log.info("✅ Invidious proxy URL use ho rahi hai | vid=%s", vid_id)
+        _cache_stream(url, is_video, su, None, dur, {})
+        return su, None, dur, {}
+
+    if isinstance(inv_result, Exception):
+        log.warning("Invidious failed for %s: %s", vid_id, inv_result)
+
+    # Fallback: yt-dlp CDN URL (direct googlevideo — cloud IPs pe block ho sakti hai)
+    info = None if isinstance(info_result, Exception) else info_result
     if not info:
-        # yt-dlp exhausted — try Invidious API (bypasses Heroku/cloud IP blocks)
-        vid_id = _extract_video_id(url)
-        if vid_id:
-            log.info(f"🔄 yt-dlp failed — trying Invidious fallback for {vid_id}")
-            inv = await _try_invidious(vid_id, not is_video)
-            if inv:
-                su, dur = inv
-                _cache_stream(url, is_video, su, None, dur, {})
-                return su, None, dur, {}
-        raise Exception(f"❌ Stream resolve nahi hua: {url[:60]}")
+        exc_msg = str(info_result) if isinstance(info_result, Exception) else ""
+        raise Exception(
+            f"❌ Stream resolve nahi hua: {url[:60]}"
+            + (f" — {exc_msg}" if exc_msg else "")
+        )
 
     su, audio_url = _pick_urls(info, not is_video)
     dur     = info.get("duration", 0) or 0
