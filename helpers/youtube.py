@@ -40,6 +40,7 @@ _BGUTIL_STATUS_LOGGED = False
 # tuple: (media_url, audio_url, duration, http_headers, expires_at)
 _stream_cache: dict[tuple[str, bool], tuple[str, str | None, int, dict, float]] = {}
 _search_cache: dict[tuple[str, bool], tuple[dict, float]] = {}
+_stream_tasks: dict[tuple[str, bool], asyncio.Task] = {}
 # YouTube CDN URLs are signed and should not be kept for a full hour.
 STREAM_TTL = 900
 SEARCH_TTL = 1800
@@ -833,7 +834,7 @@ def cleanup_temp_file(path: str) -> None:
         log.debug("Temp cleanup error for %s: %s", path, e)
 
 
-async def get_stream(
+async def _resolve_stream(
     url: str,
     is_video: bool = False,
     force_refresh: bool = False,
@@ -842,10 +843,10 @@ async def get_stream(
     Get direct stream URL for playback.
     Returns (media_url, optional_audio_url, duration_secs, http_headers).
 
-    FIX: yt-dlp aur Invidious parallel chalate hain.
-    Invidious proxied URL prefer karo — Heroku/cloud IPs pe kaam karta hai.
-    yt-dlp direct CDN URL sirf fallback ke liye (googlevideo URLs cloud IPs
-    se block hoti hain → ntgcalls shell_reader EOF → 1-sec VC leave bug).
+    yt-dlp aur Invidious parallel chalate hain.
+    Prefer a signed direct CDN URL because it lets PyTgCalls start immediately.
+    If the CDN is blocked, the premature-end retry calls this with
+    ``force_refresh=True`` and falls back to a local yt-dlp download.
     """
     cached = None if force_refresh else _cached_stream(url, is_video)
     if cached:
@@ -911,11 +912,10 @@ async def get_stream(
     if isinstance(inv_result, Exception):
         log.warning("Invidious failed for %s: %s", vid_id, inv_result)
 
-    # Fallback: Invidious down — download locally via yt-dlp.
-    # Direct CDN (googlevideo) URLs are TLS-blocked from Heroku: ntgcalls/ffmpeg uses
-    # generic OpenSSL TLS which YouTube CDN fingerprints and rejects. yt-dlp uses
-    # curl_cffi (Chrome TLS fingerprint) which the CDN accepts — downloading to a
-    # local temp file sidesteps streaming restrictions entirely.
+    # yt-dlp has already done the expensive extraction. Start with its signed
+    # media URL instead of downloading the whole track before joining the VC.
+    # The old code always downloaded here when Invidious was unavailable,
+    # adding 5-10 seconds to every uncached /play.
     info = None if isinstance(info_result, Exception) else info_result
     if not info:
         exc_msg = str(info_result) if isinstance(info_result, Exception) else ""
@@ -924,7 +924,23 @@ async def get_stream(
             + (f" — {exc_msg}" if exc_msg else "")
         )
 
-    log.info("📥 Invidious unavailable — downloading locally via yt-dlp | %s", url[:60])
+    su, audio_url = _pick_urls(info, not is_video)
+    dur = info.get("duration", 0) or 0
+    headers = info.get("http_headers") or {}
+
+    # A forced refresh is used after an immediate EOF. In that case the direct
+    # URL has already failed once, so skip another doomed CDN attempt and use
+    # curl_cffi-backed local download as the reliable fallback.
+    if not force_refresh and su and _is_streamable_url(su):
+        log.info("✅ Direct signed stream ready | %s", url[:60])
+        _cache_stream(url, is_video, su, audio_url, dur, headers)
+        return su, audio_url, dur, headers
+
+    log.info(
+        "📥 %s — downloading locally via yt-dlp | %s",
+        "Direct stream unavailable" if not su else "CDN retry fallback",
+        url[:60],
+    )
     local_path, dur = await loop.run_in_executor(
         _exec, _download_audio_sync, url, not is_video
     )
@@ -933,15 +949,75 @@ async def get_stream(
         # Caller (play.py) is responsible for cleanup via cleanup_temp_file().
         return local_path, None, dur, {}
 
-    # Absolute last resort: direct CDN URL (likely TLS-blocked, but worth one attempt)
-    su, audio_url = _pick_urls(info, not is_video)
-    dur     = info.get("duration", 0) or 0
-    headers = info.get("http_headers") or {}
+    # Absolute last resort: direct CDN URL (worth trying if local download
+    # failed, even though it may be blocked on some cloud hosts).
     if not su:
         raise Exception(f"❌ Stream URL empty hai: {url[:60]}")
-    log.warning("⚠️ Falling back to bare CDN URL (likely TLS-blocked): %s", su[:80])
+    log.warning("⚠️ Falling back to CDN URL after local download failure: %s", su[:80])
     _cache_stream(url, is_video, su, audio_url, dur, headers)
     return su, audio_url, dur, headers
+
+
+async def get_stream(
+    url: str,
+    is_video: bool = False,
+    force_refresh: bool = False,
+) -> tuple[str, str | None, int, dict]:
+    """Return a shared stream-resolution task for normal playback."""
+    key = _stream_key(url, is_video)
+    if not force_refresh:
+        cached = _cached_stream(url, is_video)
+        if cached:
+            return cached
+        pending = _stream_tasks.get(key)
+        if pending:
+            try:
+                return await pending
+            finally:
+                if pending.done() and _stream_tasks.get(key) is pending:
+                    _stream_tasks.pop(key, None)
+
+    task = asyncio.create_task(_resolve_stream(url, is_video, force_refresh))
+    if not force_refresh:
+        _stream_tasks[key] = task
+    try:
+        return await task
+    finally:
+        if not force_refresh and _stream_tasks.get(key) is task:
+            _stream_tasks.pop(key, None)
+
+
+def prefetch_stream(url: str, is_video: bool = False) -> None:
+    """Resolve a stream as soon as search returns, without blocking the UI.
+
+    Search deliberately uses yt-dlp's flat mode for fast metadata. Starting the
+    real stream resolution here overlaps that work with Telegram message
+    handling and VC setup, so _do_play() can consume the same task instead of
+    performing a second sequential extraction.
+    """
+    if not url:
+        return
+    key = _stream_key(url, is_video)
+    if key in _stream_tasks or _cached_stream(url, is_video):
+        return
+
+    task = asyncio.create_task(_resolve_stream(url, is_video=is_video))
+    _stream_tasks[key] = task
+
+    def _remove_completed(completed: asyncio.Task) -> None:
+        if _stream_tasks.get(key) is completed:
+            _stream_tasks.pop(key, None)
+
+    def _consume_error(completed: asyncio.Task) -> None:
+        if completed.cancelled():
+            return
+        try:
+            completed.exception()
+        except Exception:
+            pass
+
+    task.add_done_callback(_remove_completed)
+    task.add_done_callback(_consume_error)
 
 
 async def download_audio(url: str, is_video: bool = False) -> tuple[str, int]:

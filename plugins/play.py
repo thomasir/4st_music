@@ -44,7 +44,10 @@ from helpers.queue import (
     Song, add_to_queue, get_current, set_current,
     queue_size, pop_queue, get_queue, clear_queue, is_active, shuffle_queue,
 )
-from helpers.youtube import get_stream, fmt_duration, clear_cache_for_url, cleanup_temp_file
+from helpers.youtube import (
+    get_stream, prefetch_stream, fmt_duration, clear_cache_for_url,
+    cleanup_temp_file,
+)
 from helpers.youtube import download_audio
 from helpers.archive import (
     find_archived,
@@ -911,6 +914,10 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
             http_headers = song_info.get("http_headers", {}),
             artist       = song_info.get("uploader", "") or song_info.get("channel", ""),
         )
+        # Flat search returns metadata quickly. Resolve the signed media URL
+        # while Telegram/UI work continues so _do_play can consume the shared
+        # task instead of waiting for extraction after the search completes.
+        prefetch_stream(song.webpage_url, is_video=is_video)
 
     # chat_id already set above (before search, for VC pre-join task)
     current = get_current(chat_id)
@@ -1004,6 +1011,7 @@ async def playforce_cmd(client: Client, message: Message):
         thumbnail    = song_info.get("thumbnail", ""),
         http_headers = song_info.get("http_headers", {}),
     )
+    prefetch_stream(song.webpage_url, is_video=False)
     asyncio.create_task(_do_play(chat_id, song, status_msg, False))
 
 

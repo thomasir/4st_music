@@ -16,7 +16,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 
-from clients import bot
+from clients import assistant, bot
 from config import ARCHIVE_SCAN_LIMIT, MUSIC_ARCHIVE_CHANNEL
 
 log = logging.getLogger("ApexBot.archive")
@@ -31,6 +31,7 @@ _last_scan = 0.0
 _index_by_id: dict[str, dict] = {}
 _index_by_title: dict[str, dict] = {}
 _SCAN_TTL = 30.0
+_scan_unavailable_logged = False
 
 
 @dataclass
@@ -126,14 +127,17 @@ def _record_from_message(message) -> ArchiveRecord | None:
 
 
 async def _scan_archive() -> None:
-    global _last_scan
+    global _last_scan, _scan_unavailable_logged
     if MUSIC_ARCHIVE_CHANNEL == 0:
         return
     async with _scan_lock:
         if time.monotonic() - _last_scan < _SCAN_TTL:
             return
         try:
-            async for message in bot.get_chat_history(
+            # Telegram does not allow bot accounts to call messages.GetHistory.
+            # The assistant is a user client, so use it for archive discovery;
+            # the bot remains responsible for uploads and media downloads.
+            async for message in assistant.get_chat_history(
                 MUSIC_ARCHIVE_CHANNEL, limit=max(1, ARCHIVE_SCAN_LIMIT)
             ):
                 record = _record_from_message(message)
@@ -150,7 +154,13 @@ async def _scan_archive() -> None:
         except Exception as exc:
             # Archive is an optimisation. A missing/incorrect channel must not
             # prevent regular YouTube playback.
-            log.warning("Archive scan unavailable for %s: %s", MUSIC_ARCHIVE_CHANNEL, exc)
+            # Archive is optional. Mark the failed attempt as scanned so a bad
+            # channel/session cannot add a warning and network round-trip to
+            # every /play command.
+            _last_scan = time.monotonic()
+            if not _scan_unavailable_logged:
+                log.warning("Archive scan unavailable for %s: %s", MUSIC_ARCHIVE_CHANNEL, exc)
+                _scan_unavailable_logged = True
 
 
 async def find_archived(query: str) -> dict | None:
