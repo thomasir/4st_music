@@ -435,7 +435,8 @@ async def _ensure_assistant_in_group(chat_id: int) -> bool:
         return False
 
     # Give Telegram a moment to propagate membership
-    await asyncio.sleep(1.5)
+    # SPEED FIX: 1.5s → 0.5s — 1s saved on first-join; propagation usually instant
+    await asyncio.sleep(0.5)
     return True
 
 
@@ -536,10 +537,16 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
         # hang karta tha (socket_timeout=20 per attempt, lekin 10 combos = 200s possible).
         # 90s mein fail ho jaayega aur user ko clear error milega.
         if not stream_url:
+            # ⚡ SPEED FIX: get_stream() aur _join_vc() parallel chalao
+            # Pehle sequential tha: stream(3-8s) PHIR VC join(0-3s) = 3-11s total
+            # Ab: asyncio.gather se dono ek saath — combined = max(stream, VC) not sum
             try:
-                stream_url, audio_url, dur, http_headers = await asyncio.wait_for(
-                    get_stream(source, is_video=is_video, force_refresh=force_refresh),
-                    timeout=90.0,
+                (stream_url, audio_url, dur, http_headers), joined = await asyncio.gather(
+                    asyncio.wait_for(
+                        get_stream(source, is_video=is_video, force_refresh=force_refresh),
+                        timeout=90.0,
+                    ),
+                    _join_vc(chat_id),
                 )
                 if dur and not song.duration:
                     song.duration = dur
@@ -554,9 +561,23 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             except Exception as e:
                 await _safe_edit(status_msg, f"❌ **Stream nahi mila:**\n`{e}`\n\nDusra song try karo! 🎵")
                 return
+        else:
+            # local path / archive — VC join sequentially (pehle se fast path hai)
+            joined = await _join_vc(chat_id)
 
         if not stream_url:
             await _safe_edit(status_msg, "❌ **Stream URL khaali hai.**\nKoi aur song try karo! 🎵")
+            return
+
+        if not joined:
+            await _safe_edit(
+                status_msg,
+                "❌ **Assistant group join nahi kar paya!**\n\n"
+                "**Fix karo:**\n"
+                "1️⃣ Bot ko group ka **Admin** banao\n"
+                "2️⃣ Admin permissions mein **'Add Members'** ON karo\n"
+                "3️⃣ Phir `/play` dobara try karo 🎵"
+            )
             return
 
         # The first play also seeds the Telegram archive. Make a private copy
@@ -579,27 +600,6 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                     is_video=is_video,
                 )
             )
-
-        # ── Step 3 animation: Connecting to VC ───────────────────
-        await _safe_edit(
-            status_msg,
-            f"⚡ **Voice Chat connect ho raha hai...**\n\n"
-            f"🎶 **{song.title[:60]}**"
-        )
-
-        # Ensure assistant is in the group (auto-join via invite link if needed)
-        joined = await _join_vc(chat_id)
-        if not joined:
-            await _safe_edit(
-                status_msg,
-                "❌ **Assistant group join nahi kar paya!**\n\n"
-                "**Fix karo:**\n"
-                "1️⃣ Bot ko group ka **Admin** banao\n"
-                "2️⃣ Admin permissions mein **'Add Members'** ON karo\n"
-                "3️⃣ Phir `/play` dobara try karo 🎵"
-            )
-            return
-        await asyncio.sleep(0.4)
 
         # ── Build & start stream ──────────────────────────────────
         # RACE CONDITION FIX: set_current PEHLE karo, play() baad mein.
@@ -852,6 +852,13 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
         f"⏳ _Thoda wait karo, dhundh raha hun!_"
     )
 
+    # ⚡ SPEED FIX: VC join background mein start karo JABKI search chal raha hai
+    # Agar assistant already in group hai → 0.3s mein done (sirf get_chat check)
+    # Agar naya group hai → join bhi search ke saath parallel hota hai
+    # _do_play_inner mein bhi _join_vc() call hota hai — idempotent hai, instantly returns True
+    chat_id = message.chat.id
+    asyncio.create_task(_join_vc(chat_id))
+
     # BUG FIX: asyncio.wait_for 45s timeout — bina iske yt-dlp ka ytsearch1: call
     # cloud IPs pe hang karta tha, status message hamesha "🔍 Searching..." pe
     # stuck rehta tha. Ab 45s mein timeout ho jaayega aur clear error milega.
@@ -905,7 +912,7 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
             artist       = song_info.get("uploader", "") or song_info.get("channel", ""),
         )
 
-    chat_id = message.chat.id
+    # chat_id already set above (before search, for VC pre-join task)
     current = get_current(chat_id)
 
     if current:
@@ -966,7 +973,8 @@ async def playforce_cmd(client: Client, message: Message):
         await call_py.leave_call(chat_id)
     except Exception:
         pass
-    await asyncio.sleep(0.5)
+    # SPEED FIX: 0.5s → 0.1s — leave_call propagation is near-instant
+    await asyncio.sleep(0.1)
 
     try:
         from helpers.youtube import search_song

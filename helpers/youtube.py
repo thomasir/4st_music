@@ -229,7 +229,7 @@ def _opts(
         "allow_unplayable_formats": False,
         # socket_timeout: bina iske yt-dlp cloud IPs pe indefinitely hang karta tha.
         # 20s per attempt reasonable hai; combos ka loop overall timeout control karta hai.
-        "socket_timeout":           20,
+        "socket_timeout":           6,   # SPEED FIX: fail-fast per combo; overall cap = wait_for() timeout
         # yt-dlp's YouTube extractor needs the external JS challenge solver.
         # The build hook installs Deno when the host does not provide it.
         "js_runtimes":              {"deno": {"path": _deno_path()}},
@@ -472,19 +472,19 @@ def _extract_sync(url: str, audio_only: bool = True) -> dict | None:
     # Keep the list short: every failed client adds latency and can trigger
     # more YouTube rate limiting. The default client set is maintained by
     # yt-dlp and is the most reliable option for current YouTube changes.
+    # SPEED FIX: tv_downgraded + ios combos hataye — dono rarely help aur
+    # har failed attempt = socket_timeout (6s) ka extra wait. 2 fast combos
+    # kaafi hain; agar dono fail hon tab last-resort None combo chalti hai.
     if audio_only:
         combos: list[tuple[str | None, list, bool, bool]] = [
-            ("bestaudio/best", ["default"], False, False),
+            ("bestaudio/best", ["default"],      False, False),
             ("bestaudio/best", ["web_embedded"], False, False),
-            ("bestaudio/best", ["tv_downgraded"], False, False),
-            ("bestaudio/best", ["ios"], False, False),
-            (None,              ["default"], True,  False),
+            (None,             ["default"],      True,  False),
         ]
     else:
         combos = [
-            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["default"],       False, False),
+            ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["default"],      False, False),
             ("best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best", ["web_embedded"], False, False),
-            ("best[height<=720]/best",                                               ["ios"],          False, False),
             (None,                                                                   ["default"],      True,  False),
         ]
 
