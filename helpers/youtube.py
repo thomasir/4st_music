@@ -823,7 +823,10 @@ def cleanup_temp_file(path: str) -> None:
         return
     try:
         parent = os.path.dirname(os.path.abspath(path))
-        if os.path.basename(parent).startswith("apex_dl_") and os.path.isdir(parent):
+        if (
+            os.path.basename(parent).startswith(("apex_dl_", "apex_tg_"))
+            and os.path.isdir(parent)
+        ):
             shutil.rmtree(parent, ignore_errors=True)
             log.debug("🗑️ Cleaned up temp download dir: %s", parent)
     except Exception as e:
@@ -851,20 +854,52 @@ async def get_stream(
     loop = asyncio.get_running_loop()
     vid_id = _extract_video_id(url)
 
-    # Parallel fetch: yt-dlp + Invidious dono ek saath chalao taaki latency
-    # minimum rahe. Invidious /latest_version?local=true proxied URL return
-    # karta hai jo Heroku/cloud IPs se bhi kaam karta hai. yt-dlp direct
-    # googlevideo CDN URL deta hai jo cloud IPs se block hoti hai.
+    # Race yt-dlp against Invidious. The old gather() waited for every
+    # Invidious instance even after yt-dlp had already returned a usable
+    # result; that added 10-20 seconds to every uncached /play.
     ytdlp_task = loop.run_in_executor(_exec, _extract_sync, url, not is_video)
-    inv_task = (
+    inv_task = asyncio.create_task(
         _try_invidious(vid_id, not is_video)
         if vid_id
         else asyncio.sleep(0, result=None)
     )
-
-    info_result, inv_result = await asyncio.gather(
-        ytdlp_task, inv_task, return_exceptions=True
+    info_result = inv_result = None
+    done, pending = await asyncio.wait(
+        {ytdlp_task, inv_task},
+        return_when=asyncio.FIRST_COMPLETED,
     )
+
+    if inv_task in done:
+        try:
+            inv_result = inv_task.result()
+        except Exception as exc:
+            inv_result = exc
+        # A working proxy is ready now, so do not wait for yt-dlp.
+        if isinstance(inv_result, tuple) and inv_result:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+        else:
+            # Invidious failed first; yt-dlp remains the useful fallback.
+            try:
+                info_result = await ytdlp_task
+            except Exception as exc:
+                info_result = exc
+    elif ytdlp_task in done:
+        try:
+            info_result = ytdlp_task.result()
+        except Exception as exc:
+            info_result = exc
+        # yt-dlp already has metadata/format info. Start local download now;
+        # do not wait for a slow/failed Invidious fleet.
+        if info_result:
+            inv_task.cancel()
+            await asyncio.gather(inv_task, return_exceptions=True)
+        else:
+            try:
+                inv_result = await inv_task
+            except Exception as exc:
+                inv_result = exc
 
     # Invidious proxied URL prefer karo — cloud/Heroku IPs pe CDN block nahi hoti
     if isinstance(inv_result, tuple) and inv_result:
@@ -907,6 +942,12 @@ async def get_stream(
     log.warning("⚠️ Falling back to bare CDN URL (likely TLS-blocked): %s", su[:80])
     _cache_stream(url, is_video, su, audio_url, dur, headers)
     return su, audio_url, dur, headers
+
+
+async def download_audio(url: str, is_video: bool = False) -> tuple[str, int]:
+    """Download media locally for queue prefetch/archive upload."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_exec, _download_audio_sync, url, not is_video)
 
 
 # ── Invidious fallback ────────────────────────────────────────────

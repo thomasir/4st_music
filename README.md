@@ -82,6 +82,8 @@ cookies/
 | `OWNER_ID` | ✅ | — |
 | `OWNER_USERNAME` | ⚪ | — |
 | `LOG_CHANNEL` | ⚪ | — |
+| `MUSIC_ARCHIVE_CHANNEL` | ⚪ | `-1004436084947` |
+| `ARCHIVE_SCAN_LIMIT` | ⚪ | `100` |
 | `YOUTUBE_COOKIES` | ⚪ | — |
 | `YTDLP_PROXY` | ⚪ | — |
 | `VOLUME_BOOST` | ⚪ | `10.0` |
@@ -89,6 +91,19 @@ cookies/
 > ⚠️ API credentials must only exist in deployment config vars. The old public
 > defaults have been removed. If those credentials were ever used, rotate the
 > Telegram API hash and bot token before deploying this version.
+
+### Telegram music archive
+
+`MUSIC_ARCHIVE_CHANNEL` is used as a Telegram-backed media cache. The bot
+uploads each downloaded audio track there with machine-readable details:
+`Video_ID`, `Title`, `Artist`, `Duration`, and `Source`. On later `/play`
+requests it scans the latest `ARCHIVE_SCAN_LIMIT` messages and plays a matching
+Telegram file without YouTube cookies or yt-dlp. Add the bot as an admin in
+that channel with permission to post media and read messages.
+
+Tracks added to a voice-chat queue are downloaded in the background while the
+current track plays. This makes the next transition start from a local file
+instead of waiting for YouTube or Invidious.
 
 ### Optional YouTube proxy
 

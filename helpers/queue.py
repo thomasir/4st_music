@@ -20,6 +20,10 @@ class Song:
     source:       str           = "youtube"
     is_video:     bool          = False
     http_headers: dict          = field(default_factory=dict)
+    artist:       str           = ""
+    local_path:   str           = ""
+    archive_message_id: int     = 0
+    archive_file_id: str        = ""
 
 
 _queues:  Dict[int, List[Song]] = {}

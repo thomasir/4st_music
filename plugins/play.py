@@ -19,6 +19,8 @@ import json
 import os
 import logging
 import random
+import shutil
+import tempfile
 import time as _time
 
 from pyrogram import Client, filters
@@ -43,6 +45,13 @@ from helpers.queue import (
     queue_size, pop_queue, get_queue, clear_queue, is_active, shuffle_queue,
 )
 from helpers.youtube import get_stream, fmt_duration, clear_cache_for_url, cleanup_temp_file
+from helpers.youtube import download_audio
+from helpers.archive import (
+    find_archived,
+    upload_local,
+    download_archived,
+    record_to_song_fields,
+)
 from database import (
     add_play_history, get_random_history_song, get_history_count,
     get_autoplay, set_autoplay,
@@ -59,6 +68,7 @@ _autoplay:     dict[int, bool] = {}   # in-memory cache; DB is source of truth
 # Tracks chat_id → local temp file path for songs downloaded via yt-dlp.
 # File is deleted in on_stream_end to free /tmp disk space.
 _stream_local_files: dict[int, str] = {}
+_prefetch_tasks: dict[str, asyncio.Task] = {}
 
 def _ffmpeg_params() -> str:
     return f"-af volume={_VOL_EFFECTIVE:.1f}"
@@ -139,6 +149,148 @@ def _get_lock(chat_id: int) -> asyncio.Lock:
     if chat_id not in _play_locks:
         _play_locks[chat_id] = asyncio.Lock()
     return _play_locks[chat_id]
+
+
+def _song_key(song: Song) -> str:
+    return (song.webpage_url or song.url or song.title).strip().lower()
+
+
+async def _prefetch_song(song: Song) -> str:
+    """Prepare a song locally so a queue transition does not hit the network."""
+    if song.local_path and os.path.isfile(song.local_path):
+        return song.local_path
+
+    key = _song_key(song)
+    existing = _prefetch_tasks.get(key)
+    if existing:
+        try:
+            return await existing
+        finally:
+            if existing.done():
+                _prefetch_tasks.pop(key, None)
+
+    async def _run() -> str:
+        if song.archive_message_id:
+            record = {
+                "message_id": song.archive_message_id,
+                "source_url": song.webpage_url,
+                "title": song.title,
+                "artist": song.artist,
+                "duration": song.duration,
+                "file_id": song.archive_file_id,
+            }
+            path = await download_archived(record)
+        else:
+            source = song.webpage_url or song.url
+            if not source:
+                raise RuntimeError("song source URL is empty")
+            path, duration = await download_audio(source, song.is_video)
+            if duration and not song.duration:
+                song.duration = duration
+            if not path:
+                raise RuntimeError("local download returned no file")
+
+            # Upload in the background. Playback must not wait for Telegram
+            # archive delivery; only the local file is on the critical path.
+            asyncio.create_task(
+                _archive_downloaded_song(
+                    path,
+                    title=song.title,
+                    artist=song.artist,
+                    source_url=source,
+                    duration=song.duration,
+                    is_video=song.is_video,
+                )
+            )
+
+        song.local_path = path
+        return path
+
+    task = asyncio.create_task(_run())
+    _prefetch_tasks[key] = task
+    try:
+        return await task
+    finally:
+        if task.done():
+            _prefetch_tasks.pop(key, None)
+
+
+async def _archive_downloaded_song(
+    path: str,
+    *,
+    title: str,
+    artist: str,
+    source_url: str,
+    duration: int,
+    is_video: bool = False,
+) -> None:
+    """Archive a downloaded file without delaying playback."""
+    archive_copy = ""
+    try:
+        # The playback file belongs to the stream lifecycle and can be deleted
+        # while this background task is still uploading. Copy it into an
+        # independent temporary directory first.
+        if not os.path.isfile(path):
+            return
+        archive_dir = tempfile.mkdtemp(prefix="apex_archive_")
+        archive_copy = os.path.join(archive_dir, os.path.basename(path))
+        shutil.copy2(path, archive_copy)
+        await upload_local(
+            archive_copy,
+            title=title,
+            artist=artist,
+            source_url=source_url,
+            duration=duration,
+            is_video=is_video,
+        )
+    except Exception as exc:
+        log.debug("Background archive upload failed: %s", exc)
+    finally:
+        if archive_copy:
+            try:
+                shutil.rmtree(os.path.dirname(archive_copy), ignore_errors=True)
+            except Exception:
+                pass
+
+
+def _schedule_prefetch(song: Song) -> None:
+    """Start preparing a waiting song, but never block the command handler."""
+    task = asyncio.create_task(_prefetch_song(song))
+
+    def _done(completed: asyncio.Task) -> None:
+        try:
+            completed.result()
+            log.info("✅ Next track ready | %s", song.title[:70])
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            log.warning("Next-track prefetch failed | %s | %s", song.title[:60], exc)
+
+    task.add_done_callback(_done)
+
+
+def _song_from_archive(record: dict, requested_by: str) -> Song:
+    fields = record_to_song_fields(record)
+    return Song(
+        title=fields["title"],
+        url="",
+        duration=fields["duration"],
+        webpage_url=fields["webpage_url"],
+        requested_by=requested_by,
+        source="telegram",
+        artist=fields["artist"],
+        archive_message_id=fields["archive_message_id"],
+        archive_file_id=fields["archive_file_id"],
+    )
+
+
+async def _find_cached_song(query: str, requested_by: str) -> Song | None:
+    try:
+        record = await find_archived(query)
+    except Exception as exc:
+        log.debug("Archive lookup failed: %s", exc)
+        return None
+    return _song_from_archive(record, requested_by) if record else None
 
 
 # ══ MUSIC CARD UI ══════════════════════════════════════════════════
@@ -335,6 +487,36 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             f"🔗 _Connecting to Voice Chat..._"
         )
 
+        # Telegram archive/local prefetch is the fast path. It does not need
+        # YouTube cookies and avoids Invidious/yt-dlp during queue transitions.
+        if song.local_path and os.path.isfile(song.local_path):
+            stream_url, audio_url, dur, http_headers = (
+                song.local_path,
+                None,
+                song.duration,
+                {},
+            )
+        elif song.archive_message_id:
+            try:
+                await asyncio.wait_for(_prefetch_song(song), timeout=45.0)
+                stream_url, audio_url, dur, http_headers = (
+                    song.local_path,
+                    None,
+                    song.duration,
+                    {},
+                )
+            except Exception as e:
+                await _safe_edit(
+                    status_msg,
+                    f"❌ **Telegram archive se audio nahi mila:**\n`{str(e)[:300]}`\n\n"
+                    "Archive message check karo ya `/play` dobara try karo.",
+                )
+                return
+        else:
+            stream_url = audio_url = None
+            dur = 0
+            http_headers = {}
+
         # BUG FIX: hamesha webpage_url se fresh stream fetch karo.
         # song.url direct CDN URL hota hai jo expire ho sakta hai.
         # get_stream() cache check karta hai → fresh rehne par instant return,
@@ -347,29 +529,50 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
         # BUG FIX: asyncio.wait_for se 90s timeout — bina iske yt-dlp cloud IPs pe
         # hang karta tha (socket_timeout=20 per attempt, lekin 10 combos = 200s possible).
         # 90s mein fail ho jaayega aur user ko clear error milega.
-        try:
-            stream_url, audio_url, dur, http_headers = await asyncio.wait_for(
-                get_stream(source, is_video=is_video, force_refresh=force_refresh),
-                timeout=90.0,
-            )
-            if dur and not song.duration:
-                song.duration = dur
-        except asyncio.TimeoutError:
-            await _safe_edit(
-                status_msg,
-                "⏱️ **Timeout!** YouTube bahut slow hai abhi.\n\n"
-                "💡 **Fix:** Heroku dashboard mein `YOUTUBE_COOKIES` set karo\n"
-                "(Chrome se cookies export karke Netscape format mein).\n\n"
-                "Thodi der mein dobara try karo! 🎵"
-            )
-            return
-        except Exception as e:
-            await _safe_edit(status_msg, f"❌ **Stream nahi mila:**\n`{e}`\n\nDusra song try karo! 🎵")
-            return
+        if not stream_url:
+            try:
+                stream_url, audio_url, dur, http_headers = await asyncio.wait_for(
+                    get_stream(source, is_video=is_video, force_refresh=force_refresh),
+                    timeout=90.0,
+                )
+                if dur and not song.duration:
+                    song.duration = dur
+            except asyncio.TimeoutError:
+                await _safe_edit(
+                    status_msg,
+                    "⏱️ **Timeout!** YouTube bahut slow hai abhi.\n\n"
+                    "Archive channel mein track upload ho jaane ke baad next play "
+                    "cookies ke bina fast chalega.",
+                )
+                return
+            except Exception as e:
+                await _safe_edit(status_msg, f"❌ **Stream nahi mila:**\n`{e}`\n\nDusra song try karo! 🎵")
+                return
 
         if not stream_url:
             await _safe_edit(status_msg, "❌ **Stream URL khaali hai.**\nKoi aur song try karo! 🎵")
             return
+
+        # The first play also seeds the Telegram archive. Make a private copy
+        # before scheduling the upload because the playback temp directory is
+        # deleted as soon as the stream ends.
+        if (
+            os.path.isabs(stream_url)
+            and os.path.isfile(stream_url)
+            and not song.archive_message_id
+            and source
+            and not is_video
+        ):
+            asyncio.create_task(
+                _archive_downloaded_song(
+                    stream_url,
+                    title=song.title,
+                    artist=song.artist,
+                    source_url=source,
+                    duration=dur or song.duration,
+                    is_video=is_video,
+                )
+            )
 
         # ── Step 3 animation: Connecting to VC ───────────────────
         await _safe_edit(
@@ -649,10 +852,18 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
     # stuck rehta tha. Ab 45s mein timeout ho jaayega aur clear error milega.
     try:
         from helpers.youtube import search_song
-        song_info = await asyncio.wait_for(
-            search_song(query, is_video=is_video),
-            timeout=45.0,
-        )
+        requested_by = message.from_user.mention if message.from_user else "Unknown"
+        cached_song = None if is_video else await _find_cached_song(query, requested_by)
+        if cached_song:
+            song = cached_song
+            song.is_video = is_video
+            log.info("⚡ Archive hit | query=%r | title=%s", query[:50], song.title[:70])
+            song_info = None
+        else:
+            song_info = await asyncio.wait_for(
+                search_song(query, is_video=is_video),
+                timeout=45.0,
+            )
     except asyncio.TimeoutError:
         await _safe_edit(
             status_msg,
@@ -666,7 +877,9 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
         await _safe_edit(status_msg, f"❌ **Search error:**\n`{e}`")
         return
 
-    if not song_info or (not song_info.get("url") and not song_info.get("webpage_url")):
+    if not cached_song and (
+        not song_info or (not song_info.get("url") and not song_info.get("webpage_url"))
+    ):
         await _safe_edit(
             status_msg,
             f"❌ **Nahi mila:** `{query[:50]}`\n\n"
@@ -674,23 +887,25 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
         )
         return
 
-    requested_by = message.from_user.mention if message.from_user else "Unknown"
-    song = Song(
-        title        = song_info.get("title", query),
-        url          = song_info.get("url", ""),
-        duration     = song_info.get("duration", 0),
-        is_video     = is_video,
-        requested_by = requested_by,
-        webpage_url  = song_info.get("webpage_url", ""),
-        thumbnail    = song_info.get("thumbnail", ""),
-        http_headers = song_info.get("http_headers", {}),
-    )
+    if not cached_song:
+        song = Song(
+            title        = song_info.get("title", query),
+            url          = song_info.get("url", ""),
+            duration     = song_info.get("duration", 0),
+            is_video     = is_video,
+            requested_by = requested_by,
+            webpage_url  = song_info.get("webpage_url", ""),
+            thumbnail    = song_info.get("thumbnail", ""),
+            http_headers = song_info.get("http_headers", {}),
+            artist       = song_info.get("uploader", "") or song_info.get("channel", ""),
+        )
 
     chat_id = message.chat.id
     current = get_current(chat_id)
 
     if current:
         pos = add_to_queue(chat_id, song)
+        _schedule_prefetch(song)
         title_short = (song.title[:55] + "…") if len(song.title) > 55 else song.title
         await _safe_edit(
             status_msg,

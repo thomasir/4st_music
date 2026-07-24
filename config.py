@@ -26,6 +26,12 @@ LOG_CHANNEL     = _env_int("LOG_CHANNEL")
 SUPPORT_CHAT    = os.environ.get("SUPPORT_CHAT", "https://t.me/ApexAssociation")
 SUDO_USERS      = [OWNER_ID] if OWNER_ID else []
 
+# ── Telegram media archive ─────────────────────────────────────────
+# Audio uploaded here can be replayed without YouTube cookies or yt-dlp.
+# Override this in deployment config if the archive channel changes.
+MUSIC_ARCHIVE_CHANNEL = _env_int("MUSIC_ARCHIVE_CHANNEL", -1004436084947)
+ARCHIVE_SCAN_LIMIT     = _env_int("ARCHIVE_SCAN_LIMIT", 100)
+
 # ── Must-join channel (leave empty to disable) ─────────────────────
 MUST_JOIN       = os.environ.get("MUST_JOIN", "").strip().lstrip("@") or None
 
