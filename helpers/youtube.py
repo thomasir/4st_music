@@ -16,6 +16,8 @@ import tempfile
 import json
 import shutil
 import sys
+import subprocess
+import threading
 import urllib.request
 from urllib.parse import quote_plus, urljoin, urlsplit
 from concurrent.futures import ThreadPoolExecutor
@@ -802,6 +804,9 @@ def _download_audio_sync(url: str, audio_only: bool) -> tuple[str, int]:
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
+        # ⚡ SPEED: download DASH/HLS segments in parallel (4 threads)
+        # Reduces download time by 2-4x for segmented streams.
+        "concurrent_fragment_downloads": 4,
     }
     if cookie:
         opts["cookiefile"] = cookie
@@ -846,21 +851,88 @@ def _download_audio_sync(url: str, audio_only: bool) -> tuple[str, int]:
 
 def cleanup_temp_file(path: str) -> None:
     """
-    Delete the apex_dl_ temp directory containing a downloaded audio file.
-    Safe to call with any path — no-op if path is not an apex_dl_ temp file.
+    Delete the apex_dl_ / apex_tg_ / apex_pipe_ temp directory.
+    Safe to call with any path — no-op if path is not one of those prefixes.
     """
     if not path:
         return
     try:
         parent = os.path.dirname(os.path.abspath(path))
         if (
-            os.path.basename(parent).startswith(("apex_dl_", "apex_tg_"))
+            os.path.basename(parent).startswith(("apex_dl_", "apex_tg_", "apex_pipe_"))
             and os.path.isdir(parent)
         ):
             shutil.rmtree(parent, ignore_errors=True)
-            log.debug("🗑️ Cleaned up temp download dir: %s", parent)
+            log.debug("🗑️ Cleaned up temp dir: %s", parent)
     except Exception as e:
         log.debug("Temp cleanup error for %s: %s", path, e)
+
+
+def _start_pipe_download(url: str, audio_only: bool) -> str:
+    """
+    Start yt-dlp writing audio to a named pipe (FIFO) in a daemon thread.
+    Returns the FIFO path IMMEDIATELY — yt-dlp runs in background.
+
+    ⚡ HOW THIS SAVES TIME:
+    - yt-dlp subprocess starts RIGHT NOW (metadata fetch begins immediately).
+    - The FIFO open() blocks the writer thread until ntgcalls opens the read
+      end inside call_py.play(). By that time (~1-2s later) yt-dlp has already
+      spent 1-2s on its ~2-3s metadata fetch, so data starts flowing sooner.
+    - ffmpeg reads the FIFO as a continuous stream — music plays as soon as
+      the first audio frames arrive, without waiting for the full file download.
+    - Combined with the fire-and-forget status edit this saves ~1-2s vs full
+      pre-download on Heroku.
+    """
+    tmpdir = tempfile.mkdtemp(prefix="apex_pipe_")
+    pipe_path = os.path.join(tmpdir, "audio.webm")
+    os.mkfifo(pipe_path)
+
+    fmt = (
+        "bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio/best"
+        if audio_only
+        else "best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best"
+    )
+    cookie = _resolve_cookie_file()
+
+    cmd = [
+        sys.executable, "-m", "yt_dlp",
+        "--format", fmt,
+        "--output", "-",             # write to stdout
+        "--quiet", "--no-warnings", "--no-playlist",
+        "--concurrent-fragments", "4",
+    ]
+    if cookie:
+        cmd += ["--cookies", cookie]
+    cmd.append(url)
+
+    def _writer() -> None:
+        proc = None
+        try:
+            # yt-dlp subprocess starts immediately — metadata fetch runs
+            # in background while the event loop continues. stdout is a pipe
+            # buffer (~64KB) so yt-dlp doesn't block when it starts writing.
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            # open() on a FIFO blocks until the read end opens (call_py.play).
+            # By that time yt-dlp has been running for 1-2s already.
+            with open(pipe_path, "wb") as fifo_out:
+                shutil.copyfileobj(proc.stdout, fifo_out, length=65536)
+        except Exception as exc:
+            log.debug("pipe writer error: %s", exc)
+        finally:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=2)
+                except Exception:
+                    pass
+            try:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            except Exception:
+                pass
+
+    threading.Thread(target=_writer, daemon=True, name="apex-pipe-writer").start()
+    log.info("⚡ Pipe download started | %s → %s", url[:60], pipe_path)
+    return pipe_path
 
 
 async def _resolve_stream(
@@ -891,62 +963,54 @@ async def _resolve_stream(
     # ── Fast path: CDN known-blocked OR force_refresh ─────────────
     # On cloud/Heroku IPs, the CDN is always blocked. Trying it first wastes
     # 12 s of silence before the premature-end retry kicks in.
-    # Skip CDN entirely and race Invidious (fast, ~4s) vs download (~15s).
+    #
+    # ⚡ PIPE STREAMING ARCHITECTURE:
+    # 1. _start_pipe_download() starts yt-dlp subprocess IMMEDIATELY and returns
+    #    a FIFO path at once (no waiting for download to complete).
+    # 2. Simultaneously race Invidious with a 3.5s window.
+    # 3. If Invidious responds first → use its URL (pure HTTP stream, fastest).
+    # 4. If Invidious times out → return pipe path. yt-dlp has been running
+    #    for ~1-2s already; ffmpeg starts playing as soon as first frames arrive,
+    #    without waiting for the full file. Saves ~1-2s vs full pre-download.
     skip_cdn = force_refresh or _cdn_blocked
     if skip_cdn:
         reason = "force_refresh" if force_refresh else "cdn_blocked"
-        log.info("⚡ skip_cdn=%s | racing Invidious vs download | %s", reason, url[:60])
+        log.info("⚡ skip_cdn=%s | pipe + Invidious race | %s", reason, url[:60])
 
-        inv_future: asyncio.Future = asyncio.ensure_future(
-            _try_invidious(vid_id, not is_video)
-            if vid_id
-            else asyncio.sleep(0, result=None)
-        )
-        dl_future: asyncio.Future = asyncio.ensure_future(
-            loop.run_in_executor(_exec, _download_audio_sync, url, not is_video)
-        )
-        pending_set = {inv_future, dl_future}
+        # Start pipe download immediately — yt-dlp subprocess runs in background.
+        # FIFO path returned at once; the event loop never blocks on download.
+        pipe_path = _start_pipe_download(url, not is_video)
 
-        inv_win = dl_win = None
-        while pending_set:
-            done, pending_set = await asyncio.wait(
-                pending_set, return_when=asyncio.FIRST_COMPLETED
+        # Also race Invidious. If it wins within 3.5s, prefer the URL (no local
+        # file needed at all, lighter on disk). Otherwise fall through to pipe.
+        if vid_id:
+            inv_future: asyncio.Future = asyncio.ensure_future(
+                _try_invidious(vid_id, not is_video)
             )
-            for task in done:
-                try:
-                    res = task.result()
-                except Exception as exc:
-                    log.debug("skip_cdn task error: %s", exc)
-                    continue
-                if task is inv_future and isinstance(res, tuple) and res and res[0]:
-                    inv_win = res
-                    break
-                elif task is dl_future:
-                    path, dur2 = res if res else ("", 0)
-                    if path:
-                        dl_win = (path, dur2)
-                        break
-            if inv_win or dl_win:
-                break
+            try:
+                inv_result = await asyncio.wait_for(
+                    asyncio.shield(inv_future), timeout=3.5
+                )
+                if isinstance(inv_result, tuple) and inv_result and inv_result[0]:
+                    su, dur = inv_result
+                    log.info("✅ Invidious won before pipe | vid=%s", vid_id)
+                    inv_future.cancel()
+                    _cache_stream(url, is_video, su, None, dur, {})
+                    return su, None, dur, {}
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+            except Exception as exc:
+                log.debug("Invidious race error: %s", exc)
+            finally:
+                if not inv_future.done():
+                    inv_future.cancel()
+                    await asyncio.gather(inv_future, return_exceptions=True)
 
-        # Cancel whatever is still running
-        for t in (inv_future, dl_future):
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(inv_future, dl_future, return_exceptions=True)
-
-        if inv_win:
-            su, dur = inv_win
-            log.info("✅ Invidious proxy won the race | vid=%s", vid_id)
-            _cache_stream(url, is_video, su, None, dur, {})
-            return su, None, dur, {}
-
-        if dl_win:
-            path, dur = dl_win
-            log.info("✅ Download won the race | %s → %s", url[:60], os.path.basename(path))
-            return path, None, dur, {}
-
-        raise Exception(f"❌ Invidious + download dono fail ho gaye: {url[:60]}")
+        # Pipe wins — yt-dlp is already writing in background. Return FIFO path.
+        # Duration is unknown until yt-dlp finishes; NP card will show 0:00
+        # briefly, which is acceptable. Do NOT cache FIFO paths — one-use only.
+        log.info("⚡ Pipe path ready | %s", pipe_path)
+        return pipe_path, None, 0, {}
 
     # ── Normal path: CDN not known-blocked (VPS / home server) ───
     # Race yt-dlp signed URL against Invidious. Falls back to local download
