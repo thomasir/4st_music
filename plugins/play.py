@@ -401,6 +401,15 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
         set_current(chat_id, song)
 
         try:
+            # ROOT CAUSE FIX: pytgcalls 2.x places ffmpeg_parameters BEFORE -i in
+            # the shell_reader FFmpeg command (used for local files).  "-af volume=X"
+            # is an OUTPUT-side audio filter — FFmpeg rejects it when it appears as
+            # an input option and exits immediately, causing ntgcalls shell_reader to
+            # see EOF in 0.0 s (the "bot leaves VC in 1 second" bug with local files).
+            # For HTTP/CDN URLs a different code path is used and the bug is hidden.
+            # Volume is already controlled via call_py.change_volume_call(), so
+            # ffmpeg_parameters is not needed for local paths.
+            is_local_file = os.path.isabs(stream_url) and os.path.isfile(stream_url)
             stream = MediaStream(
                 stream_url,
                 audio_parameters=AudioQuality.HIGH,
@@ -411,7 +420,7 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                     MediaStream.Flags.AUTO_DETECT
                     if is_video else MediaStream.Flags.IGNORE
                 ),
-                ffmpeg_parameters=_ffmpeg_params(),
+                ffmpeg_parameters=None if is_local_file else _ffmpeg_params(),
                 headers=http_headers if http_headers else None,
             )
             log.info(
