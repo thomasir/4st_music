@@ -899,7 +899,14 @@ def _start_pipe_download(url: str, audio_only: bool) -> str:
         "--format", fmt,
         "--output", "-",             # write to stdout
         "--quiet", "--no-warnings", "--no-playlist",
+        "--no-check-formats",
+        "--socket-timeout", "6",
         "--concurrent-fragments", "4",
+        "--add-header",
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        "--add-header",
+        "Referer: https://www.youtube.com/",
     ]
     if cookie:
         cmd += ["--cookies", cookie]
@@ -946,9 +953,8 @@ async def _resolve_stream(
 
     ⚡ SPEED ARCHITECTURE:
     - skip_cdn=True  (cloud host OR force_refresh):
-        Invidious proxy + yt-dlp local download race in parallel.
-        Winner used immediately, loser cancelled.
-        On Heroku this means ~4s (Invidious) instead of 32s (CDN fail + download).
+        yt-dlp starts a FIFO download and the FIFO is returned immediately.
+        PyTgCalls can start consuming it while yt-dlp finishes its handshake.
     - skip_cdn=False (VPS / home server, CDN not known blocked):
         yt-dlp signed URL + Invidious race. CDN wins if URL is streamable.
         Falls back to local download only if both fail.
@@ -967,46 +973,24 @@ async def _resolve_stream(
     # ⚡ PIPE STREAMING ARCHITECTURE:
     # 1. _start_pipe_download() starts yt-dlp subprocess IMMEDIATELY and returns
     #    a FIFO path at once (no waiting for download to complete).
-    # 2. Simultaneously race Invidious with a 3.5s window.
-    # 3. If Invidious responds first → use its URL (pure HTTP stream, fastest).
-    # 4. If Invidious times out → return pipe path. yt-dlp has been running
-    #    for ~1-2s already; ffmpeg starts playing as soon as first frames arrive,
-    #    without waiting for the full file. Saves ~1-2s vs full pre-download.
+    # 2. Return the pipe immediately. yt-dlp runs in the background and ffmpeg
+    #    starts playing as soon as the first audio frames arrive, without
+    #    waiting for the full file.
     skip_cdn = force_refresh or _cdn_blocked
     if skip_cdn:
         reason = "force_refresh" if force_refresh else "cdn_blocked"
-        log.info("⚡ skip_cdn=%s | pipe + Invidious race | %s", reason, url[:60])
+        log.info("⚡ skip_cdn=%s | immediate pipe playback | %s", reason, url[:60])
 
         # Start pipe download immediately — yt-dlp subprocess runs in background.
         # FIFO path returned at once; the event loop never blocks on download.
         pipe_path = _start_pipe_download(url, not is_video)
 
-        # Also race Invidious. If it wins within 3.5s, prefer the URL (no local
-        # file needed at all, lighter on disk). Otherwise fall through to pipe.
-        if vid_id:
-            inv_future: asyncio.Future = asyncio.ensure_future(
-                _try_invidious(vid_id, not is_video)
-            )
-            try:
-                inv_result = await asyncio.wait_for(
-                    asyncio.shield(inv_future), timeout=3.5
-                )
-                if isinstance(inv_result, tuple) and inv_result and inv_result[0]:
-                    su, dur = inv_result
-                    log.info("✅ Invidious won before pipe | vid=%s", vid_id)
-                    inv_future.cancel()
-                    _cache_stream(url, is_video, su, None, dur, {})
-                    return su, None, dur, {}
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                pass
-            except Exception as exc:
-                log.debug("Invidious race error: %s", exc)
-            finally:
-                if not inv_future.done():
-                    inv_future.cancel()
-                    await asyncio.gather(inv_future, return_exceptions=True)
-
-        # Pipe wins — yt-dlp is already writing in background. Return FIFO path.
+        # Do not wait for an Invidious probe here. The old 3.5s race window was
+        # visible in production as an almost exact 3.5s gap between
+        # "Pipe download started" and "Pipe path ready". The FIFO is already
+        # backed by yt-dlp, so returning it immediately lets VC setup and
+        # ffmpeg start while yt-dlp finishes its metadata handshake.
+        #
         # Duration is unknown until yt-dlp finishes; NP card will show 0:00
         # briefly, which is acceptable. Do NOT cache FIFO paths — one-use only.
         log.info("⚡ Pipe path ready | %s", pipe_path)
