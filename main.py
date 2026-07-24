@@ -238,6 +238,16 @@ async def main():
     bot_me  = await bot.get_me()
     asst_me = await assistant.get_me()
 
+    # Keep Telegram's "/" menu in sync with the real plugin handlers.
+    # A failure here must not prevent the music bot from starting.
+    try:
+        from helpers.commands import register_bot_commands
+
+        await register_bot_commands(bot)
+        log.info("✅ Telegram slash-command menus registered")
+    except Exception as exc:
+        log.warning("⚠️ Could not register Telegram slash-command menus: %s", exc)
+
     log.info(f"🤖 Bot       : @{bot_me.username} ({bot_me.first_name})")
     log.info(f"👤 Assistant : @{asst_me.username} ({asst_me.first_name})")
     log.info("━" * 55)

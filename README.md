@@ -55,19 +55,19 @@ cookies/
 
 | Category | Commands |
 |----------|----------|
-| 🎵 Music | `/play` `/vplay` `/pause` `/resume` `/skip` `/stop` `/vol` `/queue` `/np` |
-| 👮 Admin | `/ban` `/unban` `/kick` `/mute` `/unmute` `/warn` `/clearwarn` `/promote` `/demote` `/pin` |
-| 👋 Welcome | Custom welcome/goodbye · `{mention}` `{name}` `{chat}` |
-| 🛡️ Anti-Spam | Flood control · Anti-raid auto-lock |
+| 🎵 Music | `/play` `/vplay` `/playforce` `/pause` `/resume` `/skip` `/stop` `/vol` `/queue` `/np` `/shuffle` `/loop` `/autoplay` |
+| 👮 Admin | `/ban` `/unban` `/kick` `/mute` `/unmute` `/warn` `/warns` `/clearwarn` `/promote` `/fpromote` `/demote` `/pin` `/unpin` `/purge` `/admins` `/report` |
+| 👋 Welcome | `/setwelcome` `/setgoodbye` `/welcome` `/goodbye` `/resetwelcome` `/resetgoodbye` |
+| 🛡️ Safety | Flood control · Anti-raid auto-lock · `/antiporn` |
 | 🚫 Filter | `/addfilter` `/rmfilter` `/filters` |
-| 📝 Notes | `#notename` · `/savenote` `/delnote` `/notes` |
-| 📢 Broadcast | `/broadcast` (owner only) |
-| 🎮 Games | `/truth` `/dare` `/wyr` `/trivia` |
+| 📝 Notes | `#notename` · `/savenote` `/get` `/delnote` `/notes` |
+| 📢 Broadcast | `/broadcast` (owner only, private chat) |
+| 🎮 Games | `/truth` `/dare` `/wyr` `/trivia` `/kill` `/rob` `/revive` `/protect` `/fight` `/marry` `/divorce` |
 | 🔨 GBan | `/gban` `/ungban` `/gbans` |
-| 📊 Stats | `/stats` `/topusers` |
-| 🔧 Utility | `/translate` `/shorten` `/paste` `/weather` `/id` `/ping` |
-| 🤖 AI Chat | `/ai` · Reply to bot |
-| 😂 Fun | `/joke` `/shayari` `/quote` `/meme` `/flip` `/dice` `/8ball` |
+| 📊 Stats | `/stats` `/rankings` `/topgroups` |
+| 🔧 Utility | `/genname` `/gendp` `/couples` `/id` `/ping` `/about` `/info` `/whois` |
+| 🤖 Chatbot | `/chatbot` · Reply to or mention the bot when enabled |
+| 😂 Fun | `/joke` `/shayari` `/quote` `/flip` `/dice` `/8ball` |
 
 ---
 

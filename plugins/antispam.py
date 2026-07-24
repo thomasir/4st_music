@@ -109,7 +109,7 @@ async def flood_check(client: Client, message: Message):
             asyncio.create_task(
                 _do_unmute(client, message.chat.id, message.from_user.id, FLOOD_MUTE)
             )
-        except (UserAdminInvalid, Exception):
+        except Exception:
             pass
 
 
