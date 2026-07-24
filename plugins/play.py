@@ -42,7 +42,7 @@ from helpers.queue import (
     Song, add_to_queue, get_current, set_current,
     queue_size, pop_queue, get_queue, clear_queue, is_active, shuffle_queue,
 )
-from helpers.youtube import get_stream, fmt_duration, clear_cache_for_url
+from helpers.youtube import get_stream, fmt_duration, clear_cache_for_url, cleanup_temp_file
 from database import (
     add_play_history, get_random_history_song, get_history_count,
     get_autoplay, set_autoplay,
@@ -56,6 +56,9 @@ _VOL_EFFECTIVE = min(float(FFMPEG_VOLUME_BOOST), 10.0)
 # ── Loop / Autoplay store ─────────────────────────────────────────
 _loop_enabled: dict[int, bool] = {}
 _autoplay:     dict[int, bool] = {}   # in-memory cache; DB is source of truth
+# Tracks chat_id → local temp file path for songs downloaded via yt-dlp.
+# File is deleted in on_stream_end to free /tmp disk space.
+_stream_local_files: dict[int, str] = {}
 
 def _ffmpeg_params() -> str:
     return f"-af volume={_VOL_EFFECTIVE:.1f}"
@@ -422,6 +425,11 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             # Track when this stream started so on_stream_end can detect immediate EOF.
             _play_start_times[chat_id] = _time.monotonic()
             _stream_retry_counts.pop(chat_id, None)  # reset retry counter on successful start
+            # Track local temp file so on_stream_end can clean it up
+            if os.path.isabs(stream_url) and os.path.isfile(stream_url):
+                _stream_local_files[chat_id] = stream_url
+            else:
+                _stream_local_files.pop(chat_id, None)
 
         except NoActiveGroupCall:
             set_current(chat_id, None)
@@ -1156,6 +1164,11 @@ async def on_stream_end(client: PyTgCalls, update: StreamEnded):
     recursive MTProto update propagation (pytgcalls 2.x known issue)."""
     chat_id = update.chat_id
     current = get_current(chat_id)
+
+    # Cleanup any local temp file used by the stream that just ended
+    _local = _stream_local_files.pop(chat_id, None)
+    if _local:
+        cleanup_temp_file(_local)
 
     # ── Premature-end detection (expired / bad CDN URL) ───────────
     # If a stream ends within PREMATURE_END_THRESHOLD seconds of starting,
