@@ -54,7 +54,7 @@ async def broadcast_cmd(client: Client, message: Message):
 
     await status_msg.edit(
         f"📢 **Broadcast Complete!**\n\n"
-        f"✅ Delivered : `{success}`\n"
-        f"❌ Failed    : `{failed}`\n"
-        f"📊 Total     : `{len(all_targets)}`"
+        f"> ✅ Delivered: `{success}`\n"
+        f"> ❌ Failed: `{failed}`\n"
+        f"> 📊 Total: `{len(all_targets)}`"
     )

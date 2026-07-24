@@ -11,6 +11,25 @@ from pyrogram.types import Message
 from helpers.decorators import admin_only
 from database import add_filter, remove_filter, get_filters
 from config import SUDO_USERS
+import time as _fw_time_
+
+_fw_admin_cache: dict = {}
+_FW_CACHE_TTL = 30
+
+async def _fw_is_admin(client, chat_id: int, user_id: int) -> bool:
+    now = _fw_time_.time()
+    key = (chat_id, user_id)
+    cached = _fw_admin_cache.get(key)
+    if cached and now < cached[1]:
+        return cached[0]
+    try:
+        from pyrogram.enums import ChatMemberStatus
+        member = await client.get_chat_member(chat_id, user_id)
+        is_admin = member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        is_admin = False
+    _fw_admin_cache[key] = (is_admin, now + _FW_CACHE_TTL)
+    return is_admin
 
 
 async def _warn_and_cleanup(client, chat_id: int, mention: str):
@@ -32,13 +51,8 @@ async def check_filters(client: Client, message: Message):
         return
     if message.from_user.id in SUDO_USERS:
         return
-    try:
-        from pyrogram.enums import ChatMemberStatus
-        member = await client.get_chat_member(message.chat.id, message.from_user.id)
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            return
-    except Exception:
-        pass
+    if await _fw_is_admin(client, message.chat.id, message.from_user.id):
+        return
 
     words = await get_filters(message.chat.id)
     if not words:

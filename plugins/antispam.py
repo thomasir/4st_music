@@ -13,6 +13,27 @@ from pyrogram.types import Message, ChatPermissions
 from pyrogram.errors import UserAdminInvalid
 from config import SUDO_USERS
 from database import spam_rank_ban
+import time as _time_
+
+# Admin status cache: chat_id -> {user_id -> (status, expire_time)}
+_admin_cache: dict = {}
+_ADMIN_CACHE_TTL = 30  # seconds
+
+async def _is_admin_cached(client, chat_id: int, user_id: int) -> bool:
+    """Check admin status with 30s caching to avoid per-message API calls."""
+    now = _time_.time()
+    key = (chat_id, user_id)
+    cached = _admin_cache.get(key)
+    if cached and now < cached[1]:
+        return cached[0]
+    try:
+        from pyrogram.enums import ChatMemberStatus
+        member = await client.get_chat_member(chat_id, user_id)
+        is_admin = member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER)
+    except Exception:
+        is_admin = False
+    _admin_cache[key] = (is_admin, now + _ADMIN_CACHE_TTL)
+    return is_admin
 
 # chat_id -> {user_id -> [timestamps]}
 _flood: dict[int, dict[int, list]] = defaultdict(lambda: defaultdict(list))
@@ -84,13 +105,8 @@ async def flood_check(client: Client, message: Message):
         return
 
     # Skip admins
-    try:
-        from pyrogram.enums import ChatMemberStatus
-        member = await client.get_chat_member(message.chat.id, message.from_user.id)
-        if member.status in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
-            return
-    except Exception:
-        pass
+    if await _is_admin_cached(client, message.chat.id, message.from_user.id):
+        return
 
     if _check_flood(message.chat.id, message.from_user.id):
         _flood[message.chat.id][message.from_user.id] = []

@@ -57,17 +57,16 @@ async def stats_cmd(client: Client, message: Message):
             my_count = cnt
             my_rank  = rank
 
+    pct_me = (my_count / total * 100) if total and my_count else 0
     text = (
         f"📊 **Group Stats — {message.chat.title}**\n\n"
-        f"💬 Total msgs+media: `{total:,}`\n"
-    )
-    if my_count:
-        pct = (my_count / total * 100) if total else 0
-        text += (
-            f"\n👤 **Tumhari stats:**\n"
-            f"  Messages+Media: `{my_count:,}` ({pct:.1f}%)\n"
-            f"  Rank: `#{my_rank}`"
+        f"> 💬 Total msgs+media: `{total:,}`\n"
+        + (
+            f"> 👤 Tumhara count: `{my_count:,}` ({pct_me:.1f}%)\n"
+            f"> 🏅 Rank: `#{my_rank}`"
+            if my_count else ""
         )
+    )
     await message.reply(text, reply_markup=InlineKeyboardMarkup([[
         InlineKeyboardButton("🏆 Top Users", callback_data="stats_top"),
         InlineKeyboardButton("🔄 Refresh", callback_data="stats_refresh"),

@@ -79,12 +79,11 @@ async def ban_cmd(client: Client, message: Message):
                     pass
 
         await message.reply(
-            f"🔨 **BANNED!**\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 **User:** {user.mention}\n"
-            f"🆔 **ID:** `{user.id}`\n"
-            f"📝 **Reason:** {reason}\n"
-            f"👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
+            f"🔨 **User Banned!**\n\n"
+            f"> 👤 **User:** {user.mention}\n"
+            f"> 🆔 **ID:** `{user.id}`\n"
+            f"> 📝 **Reason:** {reason}\n"
+            f"> 👮 **By:** {message.from_user.mention if message.from_user else 'Admin'}"
         )
     except UserAdminInvalid:
         await message.reply("❌ **Is user ko ban nahi kar sakta!**\n> User admin hai ya bot se upar hai.")

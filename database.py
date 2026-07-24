@@ -1,5 +1,5 @@
 """
-database.py — Apex Bot v5.0 Ultimate
+database.py — Apex Bot v6.0 Ultimate
 Tables: gbans, warns, notes, word_filters, welcome_settings, stats,
         chats, users, name_history, economy, antiporn_settings,
         chatbot_data, reaction_settings, admin_ban_tracker, spam_rank_ban,

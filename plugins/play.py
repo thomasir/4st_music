@@ -118,6 +118,12 @@ async def _safe_delete(msg):
         pass
 
 
+async def _auto_delete(msg, delay: float = 5):
+    """Background task: delete message after delay seconds. Non-blocking."""
+    await asyncio.sleep(delay)
+    await _safe_delete(msg)
+
+
 # ── Assistant ID cache ────────────────────────────────────────────
 _asst_id: int | None = None
 
@@ -833,8 +839,7 @@ async def _play_command(client: Client, message: Message, is_video: bool = False
                 InlineKeyboardButton("🎵 Now Playing", callback_data="np_refresh"),
             ]])
         )
-        await asyncio.sleep(6)
-        asyncio.create_task(_safe_delete(reply))
+        asyncio.create_task(_auto_delete(reply, 6))
         return
 
     kind_text = "🎬 Video" if is_video else "🎵 Audio"
@@ -946,8 +951,7 @@ async def playforce_cmd(client: Client, message: Message):
 
     if not query:
         r = await client.send_message(message.chat.id, "⚡ **PlayForce:** Song naam ya link dein!")
-        await asyncio.sleep(4)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 4))
         return
 
     chat_id = message.chat.id
@@ -1002,8 +1006,7 @@ async def pause_cmd(client: Client, message: Message):
     current = get_current(chat_id)
     if not current:
         r = await client.send_message(chat_id, "❌ **Abhi kuch chal nahi raha!**\n\n`/play <song>` se start karo! 🎵")
-        await asyncio.sleep(4)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 4))
         return
     try:
         await call_py.pause(chat_id)
@@ -1026,12 +1029,10 @@ async def pause_cmd(client: Client, message: Message):
                 InlineKeyboardButton("⏭️ Skip", callback_data="skip"),
             ]])
         )
-        await asyncio.sleep(4)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 4))
     except Exception as e:
         r = await client.send_message(chat_id, f"❌ `{e}`")
-        await asyncio.sleep(3)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 3))
 
 
 @Client.on_message(filters.command(["resume"]) & filters.group)
@@ -1041,8 +1042,7 @@ async def resume_cmd(client: Client, message: Message):
     current = get_current(chat_id)
     if not current:
         r = await client.send_message(chat_id, "❌ **Queue khaali hai!**\n\n`/play <song>` se start karo! 🎵")
-        await asyncio.sleep(4)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 4))
         return
     try:
         await call_py.resume(chat_id)
@@ -1059,12 +1059,10 @@ async def resume_cmd(client: Client, message: Message):
             chat_id,
             f"▶️ **Resumed!**\n\n🎶 _{current.title}_",
         )
-        await asyncio.sleep(4)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 4))
     except Exception as e:
         r = await client.send_message(chat_id, f"❌ `{e}`")
-        await asyncio.sleep(3)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 3))
 
 
 @Client.on_message(filters.command(["skip", "next", "s"]) & filters.group)
@@ -1079,8 +1077,7 @@ async def skip_cmd(client: Client, message: Message):
             chat_id,
             "⏭️ **Skipped!**\n\n📋 Queue khaali hai — ab aur koi song nahi!\n`/play <song>` se nayi playlist banao. 🎵"
         )
-        await asyncio.sleep(5)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 5))
         return
 
     status_msg = await client.send_message(
@@ -1108,8 +1105,7 @@ async def stop_cmd(client: Client, message: Message):
             InlineKeyboardButton("▶️ Play Again", switch_inline_query_current_chat="/play "),
         ]])
     )
-    await asyncio.sleep(5)
-    asyncio.create_task(_safe_delete(r))
+    asyncio.create_task(_auto_delete(r, 5))
 
 
 @Client.on_message(filters.command(["vol", "volume", "v"]) & filters.group)
@@ -1139,8 +1135,7 @@ async def vol_cmd(client: Client, message: Message):
         vol = max(0, min(200, int(args[0])))
     except ValueError:
         r = await client.send_message(chat_id, "❌ `/vol 0-200` — number dein!")
-        await asyncio.sleep(3)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 3))
         return
 
     _volumes[chat_id] = vol
@@ -1153,8 +1148,7 @@ async def vol_cmd(client: Client, message: Message):
         f"{emoji} **Volume: `{vol}%`**{label}\n"
         f"`{vbar}`"
     )
-    await asyncio.sleep(3)
-    asyncio.create_task(_safe_delete(r))
+    asyncio.create_task(_auto_delete(r, 3))
 
 
 @Client.on_message(filters.command(["queue", "q"]) & filters.group)
@@ -1174,8 +1168,7 @@ async def queue_cmd(client: Client, message: Message):
                 InlineKeyboardButton("▶️ Play Something", switch_inline_query_current_chat="/play "),
             ]])
         )
-        await asyncio.sleep(6)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 6))
         return
 
     lines = ["**📋 Music Queue**\n━━━━━━━━━━━━━━━━━━━━━━\n"]
@@ -1227,8 +1220,7 @@ async def np_cmd(client: Client, message: Message):
                 InlineKeyboardButton("▶️ Play Now", switch_inline_query_current_chat="/play "),
             ]])
         )
-        await asyncio.sleep(6)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 6))
         return
 
     np_text = np_card_text(current, chat_id)
@@ -1262,15 +1254,13 @@ async def shuffle_cmd(client: Client, message: Message):
     count = shuffle_queue(chat_id)
     if not count:
         r = await client.send_message(chat_id, "❌ Queue khaali hai — shuffle kya karein? 😅")
-        await asyncio.sleep(3)
-        asyncio.create_task(_safe_delete(r))
+        asyncio.create_task(_auto_delete(r, 3))
         return
     r = await client.send_message(
         chat_id,
         f"🔀 **Queue shuffle ho gaya!** `{count}` songs.\n_Maza aayega ab!_ 🎵"
     )
-    await asyncio.sleep(4)
-    asyncio.create_task(_safe_delete(r))
+    asyncio.create_task(_auto_delete(r, 4))
 
 
 @Client.on_message(filters.command(["loop"]) & filters.group)
@@ -1284,8 +1274,7 @@ async def loop_cmd(client: Client, message: Message):
         f"🔁 **Loop: {'ON ✅' if state else 'OFF ❌'}**\n\n"
         + (f"_Current song repeat hoti rahegi!_" if state else "_Loop band kar diya._")
     )
-    await asyncio.sleep(4)
-    asyncio.create_task(_safe_delete(r))
+    asyncio.create_task(_auto_delete(r, 4))
 
 
 # ── Stream ended → auto-next ──────────────────────────────────────
@@ -1667,5 +1656,4 @@ async def autoplay_cmd(client: Client, message: Message):
             )
         ]])
     )
-    await asyncio.sleep(8)
-    asyncio.create_task(_safe_delete(r))
+    asyncio.create_task(_auto_delete(r, 8))

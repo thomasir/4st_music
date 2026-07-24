@@ -57,10 +57,10 @@ async def gban_cmd(client: Client, message: Message):
         pass
 
     await message.reply(
-        f"🔨 **Global Ban!**\n\n"
-        f"👤 {user.mention} (`{user.id}`)\n"
-        f"📝 Reason: {reason}\n\n"
-        f"_Yeh user ab sab groups mein auto-ban hoga jahan bot hai._"
+        f"🔨 **Global Ban Executed!**\n\n"
+        f"> 👤 {user.mention} (`{user.id}`)\n"
+        f"> 📝 Reason: {reason}\n"
+        f"> ⚠️ _Yeh user ab sab groups mein auto-ban hoga._"
     )
 
     from config import LOG_CHANNEL
