@@ -920,10 +920,14 @@ async def _try_invidious(video_id: str, audio_only: bool) -> tuple[str, int] | N
                         content_type = response.headers.get(
                             "Content-Type", ""
                         ).lower()
-                        if (
-                            "text/html" in content_type
-                            or "application/json" in content_type
-                            or not content_type
+                        # Whitelist: only audio/* or video/* is a real stream.
+                        # text/plain (error messages), text/html (login pages),
+                        # application/json, and empty types are all rejected.
+                        # inv.in.projectsegfau.lt returns 'text/plain; charset=utf-8'
+                        # with a 25-byte error body — the old blacklist accepted it.
+                        if not (
+                            content_type.startswith("audio/")
+                            or content_type.startswith("video/")
                         ):
                             break
 
