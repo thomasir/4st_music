@@ -594,6 +594,8 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
         # hai, aur _leave_call() call kar deta hai (1-sec VC leave bug).
         set_current(chat_id, song)
 
+        is_local_file = os.path.isabs(stream_url) and os.path.exists(stream_url)
+        play_started = False
         try:
             # ROOT CAUSE FIX: pytgcalls 2.x places ffmpeg_parameters BEFORE -i in
             # the shell_reader FFmpeg command (used for local files).  "-af volume=X"
@@ -607,7 +609,6 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
             # ⚡ SPEED FIX: also treat named pipes (FIFOs) as local — they are
             # absolute paths but os.path.isfile() returns False for them.
             # os.path.exists() returns True for both regular files and FIFOs.
-            is_local_file = os.path.isabs(stream_url) and os.path.exists(stream_url)
             stream = MediaStream(
                 stream_url,
                 audio_parameters=AudioQuality.HIGH,
@@ -628,6 +629,7 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                 stream_url[:100],
             )
             await asyncio.wait_for(call_py.play(chat_id, stream), timeout=25.0)
+            play_started = True
             log.info("✅ Voice playback started | chat=%s | title=%s", chat_id, song.title[:80])
             # Track when this stream started so on_stream_end can detect immediate EOF.
             _play_start_times[chat_id] = _time.monotonic()
@@ -755,6 +757,12 @@ async def _do_play_inner(chat_id: int, song: Song, status_msg, is_video: bool = 
                 "Kuch aur gadbad hai — thodi der mein dobara try karo. 🎵",
             )
             return
+        finally:
+            # If PyTgCalls rejects a FIFO before the stream-end callback is
+            # emitted, that callback cannot clean up the yt-dlp child. Stop it
+            # here instead of leaving the pipe alive until its timeout.
+            if not play_started and is_local_file:
+                cleanup_temp_file(stream_url)
 
         # set_current already called above (before play) — do NOT call again here
 

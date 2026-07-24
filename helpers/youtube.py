@@ -8,6 +8,7 @@ misleading "token" error.
 
 import os
 import re
+import errno
 import asyncio
 import aiohttp
 import logging
@@ -35,7 +36,14 @@ if os.path.isdir(_BGUTIL_PLUGIN_DIR) and _BGUTIL_PLUGIN_DIR not in sys.path:
 import yt_dlp
 
 log = logging.getLogger("ApexBot.youtube")
-_exec = ThreadPoolExecutor(max_workers=16)   # ⚡ SPEED: 6→16 for true parallel downloads
+# yt-dlp extraction/downloads and pipe playback each consume memory. Keeping
+# this bounded prevents a busy group from exceeding a Heroku Standard-2X quota.
+_exec = ThreadPoolExecutor(max_workers=4)
+_PIPE_CONNECT_TIMEOUT = 15.0
+_PIPE_MAX_CONCURRENT = 2
+_pipe_slots = threading.BoundedSemaphore(_PIPE_MAX_CONCURRENT)
+_pipe_states: dict[str, dict] = {}
+_pipe_states_lock = threading.Lock()
 _BGUTIL_STATUS_LOGGED = False
 
 # ── Cloud-host CDN-block detection ───────────────────────────────
@@ -858,6 +866,16 @@ def cleanup_temp_file(path: str) -> None:
         return
     try:
         parent = os.path.dirname(os.path.abspath(path))
+        with _pipe_states_lock:
+            state = _pipe_states.pop(path, None)
+            if state is not None:
+                state["cancelled"] = True
+                proc = state.get("process")
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
         if (
             os.path.basename(parent).startswith(("apex_dl_", "apex_tg_", "apex_pipe_"))
             and os.path.isdir(parent)
@@ -886,6 +904,8 @@ def _start_pipe_download(url: str, audio_only: bool) -> str:
     tmpdir = tempfile.mkdtemp(prefix="apex_pipe_")
     pipe_path = os.path.join(tmpdir, "audio.webm")
     os.mkfifo(pipe_path)
+    with _pipe_states_lock:
+        _pipe_states[pipe_path] = {"process": None, "cancelled": False}
 
     fmt = (
         "bestaudio[ext=webm]/bestaudio[ext=opus]/bestaudio/best"
@@ -914,24 +934,71 @@ def _start_pipe_download(url: str, audio_only: bool) -> str:
 
     def _writer() -> None:
         proc = None
+        fifo_fd = None
+        slot_acquired = False
         try:
+            slot_acquired = _pipe_slots.acquire(timeout=_PIPE_CONNECT_TIMEOUT)
+            if not slot_acquired:
+                log.warning("Pipe concurrency limit reached; abandoning FIFO | %s", url[:60])
+                return
             # yt-dlp subprocess starts immediately — metadata fetch runs
             # in background while the event loop continues. stdout is a pipe
             # buffer (~64KB) so yt-dlp doesn't block when it starts writing.
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            # open() on a FIFO blocks until the read end opens (call_py.play).
-            # By that time yt-dlp has been running for 1-2s already.
-            with open(pipe_path, "wb") as fifo_out:
+            with _pipe_states_lock:
+                state = _pipe_states.get(pipe_path)
+                if state is None or state["cancelled"]:
+                    proc.kill()
+                    return
+                state["process"] = proc
+
+            # A blocking FIFO open can leave yt-dlp alive forever when
+            # PyTgCalls rejects the source before opening the pipe. Poll for a
+            # reader with a bounded timeout instead.
+            deadline = time.monotonic() + _PIPE_CONNECT_TIMEOUT
+            while time.monotonic() < deadline:
+                with _pipe_states_lock:
+                    state = _pipe_states.get(pipe_path)
+                    cancelled = state is None or state["cancelled"]
+                if cancelled:
+                    return
+                try:
+                    fifo_fd = os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+                    break
+                except OSError as exc:
+                    if exc.errno != errno.ENXIO:
+                        raise
+                    time.sleep(0.1)
+            else:
+                log.warning(
+                    "FIFO reader did not connect in %.1fs | %s",
+                    _PIPE_CONNECT_TIMEOUT,
+                    url[:60],
+                )
+                return
+
+            # Stream bytes directly; never buffer the complete track in Python.
+            with os.fdopen(fifo_fd, "wb") as fifo_out:
+                fifo_fd = None
                 shutil.copyfileobj(proc.stdout, fifo_out, length=65536)
         except Exception as exc:
             log.debug("pipe writer error: %s", exc)
         finally:
+            if fifo_fd is not None:
+                try:
+                    os.close(fifo_fd)
+                except OSError:
+                    pass
             if proc is not None and proc.poll() is None:
                 try:
                     proc.kill()
                     proc.wait(timeout=2)
                 except Exception:
                     pass
+            with _pipe_states_lock:
+                _pipe_states.pop(pipe_path, None)
+            if slot_acquired:
+                _pipe_slots.release()
             try:
                 shutil.rmtree(tmpdir, ignore_errors=True)
             except Exception:
@@ -1121,6 +1188,12 @@ def prefetch_stream(url: str, is_video: bool = False) -> None:
     performing a second sequential extraction.
     """
     if not url:
+        return
+    # Cloud playback returns a one-shot FIFO immediately. Prefetching it from
+    # /play and resolving it again in _do_play can create two yt-dlp children
+    # for the same track; skip that duplicate path on Heroku/cloud hosts.
+    if _cdn_blocked:
+        log.debug("Skipping cloud pipe prefetch; playback owns one FIFO | %s", url[:60])
         return
     key = _stream_key(url, is_video)
     if key in _stream_tasks or _cached_stream(url, is_video):
