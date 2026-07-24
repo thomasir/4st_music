@@ -33,8 +33,37 @@ if os.path.isdir(_BGUTIL_PLUGIN_DIR) and _BGUTIL_PLUGIN_DIR not in sys.path:
 import yt_dlp
 
 log = logging.getLogger("ApexBot.youtube")
-_exec = ThreadPoolExecutor(max_workers=6)
+_exec = ThreadPoolExecutor(max_workers=16)   # ⚡ SPEED: 6→16 for true parallel downloads
 _BGUTIL_STATUS_LOGGED = False
+
+# ── Cloud-host CDN-block detection ───────────────────────────────
+# On Heroku/Railway/Render/Fly.io the YouTube CDN (googlevideo.com) is
+# IP-blocked. Trying to stream from a CDN URL always causes an immediate
+# EOF and a 12-second silence before the retry. Detect cloud hosts at
+# startup and skip CDN probing entirely — go straight to Invidious/download.
+_ON_CLOUD_HOST: bool = bool(
+    os.environ.get("DYNO")                  # Heroku
+    or os.environ.get("RAILWAY_ENVIRONMENT")  # Railway
+    or os.environ.get("RENDER_SERVICE_ID")    # Render
+    or os.environ.get("FLY_APP_NAME")         # Fly.io
+    or os.environ.get("K_SERVICE")            # Google Cloud Run
+    or os.environ.get("WEBSITE_INSTANCE_ID")  # Azure App Service
+)
+
+# Runtime flag — flipped True on first premature stream end (CDN EOF).
+# Starts True on known cloud hosts so the very first play skips CDN.
+_cdn_blocked: bool = _ON_CLOUD_HOST
+
+
+def mark_cdn_blocked() -> None:
+    """Call when a CDN stream fails (premature end) so future plays skip CDN."""
+    global _cdn_blocked
+    if not _cdn_blocked:
+        log.info(
+            "🚫 CDN stream premature EOF — switching to Invidious/download-first "
+            "mode for all future plays on this host."
+        )
+        _cdn_blocked = True
 
 # ── Cache ─────────────────────────────────────────────────────────
 # tuple: (media_url, audio_url, duration, http_headers, expires_at)
@@ -843,10 +872,14 @@ async def _resolve_stream(
     Get direct stream URL for playback.
     Returns (media_url, optional_audio_url, duration_secs, http_headers).
 
-    yt-dlp aur Invidious parallel chalate hain.
-    Prefer a signed direct CDN URL because it lets PyTgCalls start immediately.
-    If the CDN is blocked, the premature-end retry calls this with
-    ``force_refresh=True`` and falls back to a local yt-dlp download.
+    ⚡ SPEED ARCHITECTURE:
+    - skip_cdn=True  (cloud host OR force_refresh):
+        Invidious proxy + yt-dlp local download race in parallel.
+        Winner used immediately, loser cancelled.
+        On Heroku this means ~4s (Invidious) instead of 32s (CDN fail + download).
+    - skip_cdn=False (VPS / home server, CDN not known blocked):
+        yt-dlp signed URL + Invidious race. CDN wins if URL is streamable.
+        Falls back to local download only if both fail.
     """
     cached = None if force_refresh else _cached_stream(url, is_video)
     if cached:
@@ -855,9 +888,69 @@ async def _resolve_stream(
     loop = asyncio.get_running_loop()
     vid_id = _extract_video_id(url)
 
-    # Race yt-dlp against Invidious. The old gather() waited for every
-    # Invidious instance even after yt-dlp had already returned a usable
-    # result; that added 10-20 seconds to every uncached /play.
+    # ── Fast path: CDN known-blocked OR force_refresh ─────────────
+    # On cloud/Heroku IPs, the CDN is always blocked. Trying it first wastes
+    # 12 s of silence before the premature-end retry kicks in.
+    # Skip CDN entirely and race Invidious (fast, ~4s) vs download (~15s).
+    skip_cdn = force_refresh or _cdn_blocked
+    if skip_cdn:
+        reason = "force_refresh" if force_refresh else "cdn_blocked"
+        log.info("⚡ skip_cdn=%s | racing Invidious vs download | %s", reason, url[:60])
+
+        inv_future: asyncio.Future = asyncio.ensure_future(
+            _try_invidious(vid_id, not is_video)
+            if vid_id
+            else asyncio.sleep(0, result=None)
+        )
+        dl_future: asyncio.Future = asyncio.ensure_future(
+            loop.run_in_executor(_exec, _download_audio_sync, url, not is_video)
+        )
+        pending_set = {inv_future, dl_future}
+
+        inv_win = dl_win = None
+        while pending_set:
+            done, pending_set = await asyncio.wait(
+                pending_set, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in done:
+                try:
+                    res = task.result()
+                except Exception as exc:
+                    log.debug("skip_cdn task error: %s", exc)
+                    continue
+                if task is inv_future and isinstance(res, tuple) and res and res[0]:
+                    inv_win = res
+                    break
+                elif task is dl_future:
+                    path, dur2 = res if res else ("", 0)
+                    if path:
+                        dl_win = (path, dur2)
+                        break
+            if inv_win or dl_win:
+                break
+
+        # Cancel whatever is still running
+        for t in (inv_future, dl_future):
+            if not t.done():
+                t.cancel()
+        await asyncio.gather(inv_future, dl_future, return_exceptions=True)
+
+        if inv_win:
+            su, dur = inv_win
+            log.info("✅ Invidious proxy won the race | vid=%s", vid_id)
+            _cache_stream(url, is_video, su, None, dur, {})
+            return su, None, dur, {}
+
+        if dl_win:
+            path, dur = dl_win
+            log.info("✅ Download won the race | %s → %s", url[:60], os.path.basename(path))
+            return path, None, dur, {}
+
+        raise Exception(f"❌ Invidious + download dono fail ho gaye: {url[:60]}")
+
+    # ── Normal path: CDN not known-blocked (VPS / home server) ───
+    # Race yt-dlp signed URL against Invidious. Falls back to local download
+    # only if both fail to give a streamable URL.
     ytdlp_task = loop.run_in_executor(_exec, _extract_sync, url, not is_video)
     inv_task = asyncio.create_task(
         _try_invidious(vid_id, not is_video)
@@ -875,13 +968,11 @@ async def _resolve_stream(
             inv_result = inv_task.result()
         except Exception as exc:
             inv_result = exc
-        # A working proxy is ready now, so do not wait for yt-dlp.
         if isinstance(inv_result, tuple) and inv_result:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
         else:
-            # Invidious failed first; yt-dlp remains the useful fallback.
             try:
                 info_result = await ytdlp_task
             except Exception as exc:
@@ -891,8 +982,6 @@ async def _resolve_stream(
             info_result = ytdlp_task.result()
         except Exception as exc:
             info_result = exc
-        # yt-dlp already has metadata/format info. Start local download now;
-        # do not wait for a slow/failed Invidious fleet.
         if info_result:
             inv_task.cancel()
             await asyncio.gather(inv_task, return_exceptions=True)
@@ -902,7 +991,6 @@ async def _resolve_stream(
             except Exception as exc:
                 inv_result = exc
 
-    # Invidious proxied URL prefer karo — cloud/Heroku IPs pe CDN block nahi hoti
     if isinstance(inv_result, tuple) and inv_result:
         su, dur = inv_result
         log.info("✅ Invidious proxy URL use ho rahi hai | vid=%s", vid_id)
@@ -912,10 +1000,6 @@ async def _resolve_stream(
     if isinstance(inv_result, Exception):
         log.warning("Invidious failed for %s: %s", vid_id, inv_result)
 
-    # yt-dlp has already done the expensive extraction. Start with its signed
-    # media URL instead of downloading the whole track before joining the VC.
-    # The old code always downloaded here when Invidious was unavailable,
-    # adding 5-10 seconds to every uncached /play.
     info = None if isinstance(info_result, Exception) else info_result
     if not info:
         exc_msg = str(info_result) if isinstance(info_result, Exception) else ""
@@ -928,10 +1012,7 @@ async def _resolve_stream(
     dur = info.get("duration", 0) or 0
     headers = info.get("http_headers") or {}
 
-    # A forced refresh is used after an immediate EOF. In that case the direct
-    # URL has already failed once, so skip another doomed CDN attempt and use
-    # curl_cffi-backed local download as the reliable fallback.
-    if not force_refresh and su and _is_streamable_url(su):
+    if su and _is_streamable_url(su):
         log.info("✅ Direct signed stream ready | %s", url[:60])
         _cache_stream(url, is_video, su, audio_url, dur, headers)
         return su, audio_url, dur, headers
@@ -945,12 +1026,8 @@ async def _resolve_stream(
         _exec, _download_audio_sync, url, not is_video
     )
     if local_path:
-        # Do NOT cache local paths — file is deleted after playback.
-        # Caller (play.py) is responsible for cleanup via cleanup_temp_file().
         return local_path, None, dur, {}
 
-    # Absolute last resort: direct CDN URL (worth trying if local download
-    # failed, even though it may be blocked on some cloud hosts).
     if not su:
         raise Exception(f"❌ Stream URL empty hai: {url[:60]}")
     log.warning("⚠️ Falling back to CDN URL after local download failure: %s", su[:80])

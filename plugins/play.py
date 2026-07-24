@@ -46,7 +46,7 @@ from helpers.queue import (
 )
 from helpers.youtube import (
     get_stream, prefetch_stream, fmt_duration, clear_cache_for_url,
-    cleanup_temp_file,
+    cleanup_temp_file, mark_cdn_blocked,
 )
 from helpers.youtube import download_audio
 from helpers.archive import (
@@ -437,9 +437,7 @@ async def _ensure_assistant_in_group(chat_id: int) -> bool:
         log.error("Assistant join_chat failed for chat %s: %s", chat_id, e)
         return False
 
-    # Give Telegram a moment to propagate membership
-    # SPEED FIX: 1.5s → 0.5s — 1s saved on first-join; propagation usually instant
-    await asyncio.sleep(0.5)
+    # SPEED FIX: sleep removed — Telegram membership propagation is instant
     return True
 
 
@@ -1327,6 +1325,11 @@ async def _retry_stream(chat_id: int, song: Song):
     source = song.webpage_url or song.url
     if source:
         clear_cache_for_url(source, song.is_video)
+
+    # ⚡ SPEED FIX: Mark CDN as blocked so ALL future plays skip CDN probing
+    # and go straight to Invidious/download race. One premature EOF is enough
+    # evidence that this server IP is CDN-blocked (Heroku, Railway, etc.).
+    mark_cdn_blocked()
 
     log.info(
         "🔄 Stream retry %d/%d for chat %s | song=%s",
