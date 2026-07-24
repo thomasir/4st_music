@@ -748,6 +748,88 @@ async def search_song(query: str, is_video: bool = False) -> dict | None:
     return result
 
 
+def _download_audio_sync(url: str, audio_only: bool) -> tuple[str, int]:
+    """
+    Download audio/video to a local temp file using yt-dlp.
+    Returns (local_file_path, duration_secs), or ("", 0) on failure.
+
+    WHY THIS WORKS: yt-dlp ships with curl_cffi which impersonates Chrome's
+    TLS fingerprint. YouTube CDN (googlevideo.com) blocks requests with a
+    generic OpenSSL TLS stack (ntgcalls/ffmpeg) but allows Chrome-fingerprint
+    downloads even from Heroku/cloud IPs. Reading from a local file bypasses
+    all streaming CDN restrictions entirely.
+    """
+    cookie = _resolve_cookie_file()
+    tmpdir = tempfile.mkdtemp(prefix="apex_dl_")
+    fmt = (
+        "best[height<=720][vcodec!=none][acodec!=none]/best[height<=720]/best"
+        if not audio_only
+        else "bestaudio/best"
+    )
+    opts: dict = {
+        "format": fmt,
+        "outtmpl": os.path.join(tmpdir, "audio.%(ext)s"),
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+    }
+    if cookie:
+        opts["cookiefile"] = cookie
+
+    # Carry over bgutil/PO-token extractor args and custom headers
+    base = _opts(audio_only)
+    for k in ("extractor_args", "http_headers"):
+        if k in base:
+            opts[k] = base[k]
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            if not info:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+                return "", 0
+
+            ext = info.get("ext", "opus")
+            path = os.path.join(tmpdir, f"audio.{ext}")
+            if not os.path.exists(path):
+                files = [
+                    f for f in os.listdir(tmpdir)
+                    if os.path.isfile(os.path.join(tmpdir, f))
+                ]
+                if not files:
+                    shutil.rmtree(tmpdir, ignore_errors=True)
+                    return "", 0
+                path = os.path.join(tmpdir, files[0])
+
+            dur = info.get("duration", 0) or 0
+            size_mb = os.path.getsize(path) / 1e6
+            log.info(
+                "✅ yt-dlp download OK | %s → %s (%.1f MB, %ds)",
+                url[:60], os.path.basename(path), size_mb, dur,
+            )
+            return path, dur
+    except Exception as e:
+        log.error("❌ yt-dlp local download failed: %s", e)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        return "", 0
+
+
+def cleanup_temp_file(path: str) -> None:
+    """
+    Delete the apex_dl_ temp directory containing a downloaded audio file.
+    Safe to call with any path — no-op if path is not an apex_dl_ temp file.
+    """
+    if not path:
+        return
+    try:
+        parent = os.path.dirname(os.path.abspath(path))
+        if os.path.basename(parent).startswith("apex_dl_") and os.path.isdir(parent):
+            shutil.rmtree(parent, ignore_errors=True)
+            log.debug("🗑️ Cleaned up temp download dir: %s", parent)
+    except Exception as e:
+        log.debug("Temp cleanup error for %s: %s", path, e)
+
+
 async def get_stream(
     url: str,
     is_video: bool = False,
@@ -794,7 +876,11 @@ async def get_stream(
     if isinstance(inv_result, Exception):
         log.warning("Invidious failed for %s: %s", vid_id, inv_result)
 
-    # Fallback: yt-dlp CDN URL (direct googlevideo — cloud IPs pe block ho sakti hai)
+    # Fallback: Invidious down — download locally via yt-dlp.
+    # Direct CDN (googlevideo) URLs are TLS-blocked from Heroku: ntgcalls/ffmpeg uses
+    # generic OpenSSL TLS which YouTube CDN fingerprints and rejects. yt-dlp uses
+    # curl_cffi (Chrome TLS fingerprint) which the CDN accepts — downloading to a
+    # local temp file sidesteps streaming restrictions entirely.
     info = None if isinstance(info_result, Exception) else info_result
     if not info:
         exc_msg = str(info_result) if isinstance(info_result, Exception) else ""
@@ -803,13 +889,22 @@ async def get_stream(
             + (f" — {exc_msg}" if exc_msg else "")
         )
 
+    log.info("📥 Invidious unavailable — downloading locally via yt-dlp | %s", url[:60])
+    local_path, dur = await loop.run_in_executor(
+        _exec, _download_audio_sync, url, not is_video
+    )
+    if local_path:
+        # Do NOT cache local paths — file is deleted after playback.
+        # Caller (play.py) is responsible for cleanup via cleanup_temp_file().
+        return local_path, None, dur, {}
+
+    # Absolute last resort: direct CDN URL (likely TLS-blocked, but worth one attempt)
     su, audio_url = _pick_urls(info, not is_video)
     dur     = info.get("duration", 0) or 0
     headers = info.get("http_headers") or {}
-
     if not su:
         raise Exception(f"❌ Stream URL empty hai: {url[:60]}")
-
+    log.warning("⚠️ Falling back to bare CDN URL (likely TLS-blocked): %s", su[:80])
     _cache_stream(url, is_video, su, audio_url, dur, headers)
     return su, audio_url, dur, headers
 
